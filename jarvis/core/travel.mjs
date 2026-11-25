@@ -1,0 +1,414 @@
+import {createHash} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
+import {setTimeout as wait} from 'node:timers/promises';
+
+const MINUTE = 60_000;
+const DAY = 1440 * MINUTE;
+const CAMPUS = {kind:'campus', name:'TU Delft Aula', detail:'Mekelweg 5', lat:52.00219, lon:4.37347};
+const POSTCODE = /\b[1-9]\d{3}\s?[A-Z]{2}\b/i;
+const ALLOWED_AREA = {south:51.90, west:4.20, north:52.13, east:4.56};
+const USER_AGENT = 'Delft Housing Watch/0.1 (private housing tracker)';
+const MAP_VERSION = 2;
+const modes = {walk:'foot', bike:'bike'};
+const chains = {
+  gym: ['Basic-Fit','TrainMore','SportCity','Anytime Fitness','Fit For Free','Snap Fitness','BigGym','David Lloyd'],
+  supermarket: ['Albert Heijn','Jumbo','Lidl','Aldi','PLUS','Dirk','Hoogvliet','Vomar','SPAR','Coop','DekaMarkt','Ekoplaza','Nettorama'],
+};
+const normalize = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[^\p{L}\d]/gu,'');
+const point = p => Number.isFinite(p?.lat) && Math.abs(p.lat)<=90 && Number.isFinite(p?.lon) && Math.abs(p.lon)<=180;
+const value = n => Number.isFinite(n) && n>=0;
+
+function metres(a,b) {
+  const radians = Math.PI / 180;
+  const h = Math.sin((b.lat-a.lat)*radians/2)**2 +
+    Math.cos(a.lat*radians)*Math.cos(b.lat*radians)*Math.sin((b.lon-a.lon)*radians/2)**2;
+  return 12_742_000 * Math.asin(Math.sqrt(Math.min(1,h)));
+}
+
+function addressInput(text, defaultCity, allowStreet=false) {
+  if(typeof text !== 'string' || !text.trim() || text.length>120) return null;
+  const postcode = text.match(POSTCODE);
+  let prefix = postcode ? text.slice(0,postcode.index) : text;
+  const town = postcode ? text.slice(postcode.index+postcode[0].length).trim() : null;
+  prefix = prefix.trim().replace(/[,;]+$/,'').trim();
+  const address = prefix.match(/^([\p{L}][\p{L}\d .'’\-]{1,66}?)\s+(\d{1,5})([a-z]|[-/]\d{1,4}[a-z]?|[-/ ]+[a-z](?=[\s,]|$))?(?:[,\s]+([\p{L}][\p{L} '’-]{1,30}))?$/iu);
+  const code = postcode?.[0].toUpperCase().replace(/\s/g,'');
+  if(!address && !code && allowStreet && defaultCity && /^[\p{L}][\p{L}\d .'’\-]{1,66}$/u.test(prefix)) {
+    return {street:prefix,city:defaultCity,query:prefix+' '+defaultCity};
+  }
+  if(!address && (!code || prefix || (town && !/^[\p{L} '-]{2,31}$/u.test(town)))) return null;
+  const city = town || address?.[4] || (code ? '' : defaultCity);
+  if(!code && !city) return null;
+  const street = address?.[1];
+  const house = address ? address[2]+(address[3]||'') : undefined;
+  return {street,house,city,code,query:[street,house,code,city].filter(Boolean).join(' ')};
+}
+
+export function listingAddress(listing) {
+  // A description can mention a university, shop, or contact address. Only use explicit property fields or an address title.
+  const body = String(listing.body || '').slice(0,4000);
+  const labels = [...body.matchAll(/^\s*(?:property address|adres|address|postcode|postal code)\s*:\s*([^\n]+)$/gim)];
+  const streetTitle = listing.source==='kamernet' && /, Delft$/i.test(listing.title || '') ? listing.title.slice(0,-7) : null;
+  const candidates = [addressInput(listing.address || streetTitle,listing.city,true),
+    ...[listing.title,...labels.map(m=>m[1])].map(text=>addressInput(text,listing.city))].filter(Boolean);
+  const addresses = candidates.filter(p=>p.house);
+  const unique = new Set(addresses.map(p=>normalize(p.street)+':'+normalize(p.house)));
+  const codes = [...new Set(candidates.map(p=>p.code).filter(Boolean))];
+  if(unique.size>1 || codes.length>1) return null;
+  return addresses.find(p=>p.code) || addresses[0] || candidates.find(p=>p.code) || candidates[0] || null;
+}
+
+async function getJson(fetcher,url,{timeout=5500,limit=1_500_000}={}) {
+  const response = await fetcher(url,{redirect:'error',headers:{'user-agent':USER_AGENT,accept:'application/json'},signal:AbortSignal.timeout(timeout)});
+  // OSRM uses HTTP 400 for an unsnappable point or missing route.
+  if(!response.ok && !(response.status===400 && url.hostname==='routing.openstreetmap.de')) throw new Error('Provider request failed');
+  if(!response.body) throw new Error('Provider returned no data');
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    if(size>limit) throw new Error('Provider response exceeded the limit');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+function pdokPoint(doc) {
+  const match = /^POINT\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)$/.exec(doc.centroide_ll || '');
+  if(!match) return null;
+  const p = {lat:Number(match[2]),lon:Number(match[1])};
+  return point(p) ? p : null;
+}
+
+async function geocode(fetcher,input) {
+  const url = new URL('https://api.pdok.nl/bzk/locatieserver/search/v3_1/free');
+  const type=input.house?'adres':input.code?'postcode':'weg';
+  url.search = new URLSearchParams({
+    q:input.query, fq:'type:'+type, rows:'12',
+    fl:'weergavenaam,straatnaam,huisnummer,huisletter,huisnummertoevoeging,postcode,woonplaatsnaam,centroide_ll',
+  });
+  if(input.code) url.searchParams.append('fq','postcode:'+input.code);
+  const data = await getJson(fetcher,url);
+  if(!Array.isArray(data?.response?.docs)) throw new Error('Invalid geocoder response');
+  const matches = data.response.docs.filter(doc=>{
+    if(input.code && normalize(input.code)!==normalize(doc.postcode)) return false;
+    if(input.city && normalize(input.city)!==normalize(doc.woonplaatsnaam)) return false;
+    if(!input.street) return true;
+    if(normalize(doc.straatnaam)!==normalize(input.street)) return false;
+    return !input.house || normalize([doc.huisnummer,doc.huisletter,doc.huisnummertoevoeging].filter(Boolean).join(''))===normalize(input.house);
+  }).map(doc=>({p:pdokPoint(doc),doc})).filter(({p})=>p);
+  if(!matches.length) return null;
+  const {p,doc} = matches[0];
+  if(matches.some(match=>metres(p,match.p)>30)) return null;
+  return {...p,label:doc.weergavenaam || input.query,precision:input.house?'address':input.code?'postcode':'street'};
+}
+
+function chainFor(tags,kind) {
+  const brand = normalize(tags.brand);
+  const name = normalize(tags.name);
+  return chains[kind].find(chain=>{
+    const key = normalize(chain);
+    if(brand) return brand===key || (chain==='Albert Heijn' && brand==='ah');
+    if(chain==='Albert Heijn' && String(tags.name || '').match(/^AH(?:\s+(?!to\s+go\b).+)?$/i)) return true;
+    if(name===key) return true;
+    if(!name.startsWith(key)) return false;
+    // A branch name may include its street, but a partial brand word is not enough.
+    const escaped = chain.replace(/[.*+?^$${}()|[\]\\]/g,'\\$&').replace(/-/g,'[- ]?');
+    return new RegExp('^'+escaped+'(?:\\s|[-(])','i').test(tags.name || '');
+  });
+}
+
+function webLink(input) {
+  if(typeof input!=='string' || input.length>400) return undefined;
+  try {
+    const url=new URL(input);
+    if(url.protocol==='https:' && !url.username && !url.password) return url.href;
+  } catch {}
+}
+
+async function loadPlaces(fetcher,localFile) {
+  if(localFile){
+    try {
+      const local=JSON.parse(await readFile(localFile,'utf8'));
+      return catalogPlaces(local);
+    } catch {
+      // If the local map data has not been installed yet, try the public source.
+    }
+  }
+  const {south,west,north,east} = ALLOWED_AREA;
+  const bbox = [south,west,north,east].join(',');
+  const query = `[out:json][timeout:12];(nwr["shop"="supermarket"](${bbox});nwr["leisure"="fitness_centre"](${bbox}););out center;`;
+  const url = new URL('https://overpass-api.de/api/interpreter');
+  url.searchParams.set('data',query);
+  const data = await getJson(fetcher,url,{timeout:14000});
+  return catalogPlaces(data);
+}
+
+export function catalogPlaces(data, { requireBoth = true } = {}) {
+  if(data?.remark || !Array.isArray(data?.elements)) throw new Error('Incomplete amenities response');
+  const places = data.elements.flatMap(item=>{
+    const tags = item.tags || {};
+    const kind = tags.shop==='supermarket' ? 'supermarket' : 'gym';
+    const brand = chainFor(tags,kind);
+    const p = item.center || item;
+    if(!brand || !point(p) || tags.disused==='yes' || tags.access==='private' || tags['was:shop'] || tags['was:leisure']) return [];
+    const name = String(tags.name || brand).slice(0,90);
+    const address = [tags['addr:street'],tags['addr:housenumber']].filter(Boolean).join(' ');
+    return [{
+      lat:p.lat,lon:p.lon,kind,name,detail:address || (name!==brand ? brand : ''),
+      website:webLink(tags.website) || webLink(tags['contact:website']),
+    }];
+  });
+  if(requireBoth && (!places.some(p=>p.kind==='gym') || !places.some(p=>p.kind==='supermarket'))) throw new Error('Incomplete amenities catalog');
+  return places;
+}
+
+export function nearest(places,origin,kind) {
+  const candidates = places.filter(p=>p.kind===kind).map(p=>({p,distance:metres(origin,p)}));
+  return candidates.sort((a,b)=>a.distance-b.distance)[0]?.p;
+}
+
+async function streetRoute(fetcher,from,to,mode) {
+  const url = new URL(`https://routing.openstreetmap.de/routed-${modes[mode]}/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}`);
+  url.search = new URLSearchParams({overview:'simplified',geometries:'geojson',radiuses:'160;160'});
+  const data = await getJson(fetcher,url);
+  if(['NoRoute','NoSegment'].includes(data.code)) return {status:'no_route'};
+  const route = data.routes?.[0];
+  if(data.code!=='Ok' || !value(route?.duration) || !value(route?.distance)) throw new Error('Invalid street route');
+  const geometry=route.geometry;
+  const points=geometry?.type==='LineString' && Array.isArray(geometry.coordinates) ?
+    geometry.coordinates.filter(Array.isArray).map(([lon,lat])=>({lat,lon})) : [];
+  const path=compactPath(points);
+  return {status:'ok',seconds:route.duration,metres:route.distance,segments:path?[{kind:mode,points:path}]:[]};
+}
+
+const amsterdam = new Intl.DateTimeFormat('en-GB',{
+  timeZone:'Europe/Amsterdam',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23',
+});
+const localParts = time => Object.fromEntries(amsterdam.formatToParts(time).map(({type,value})=>[type,Number(value)]));
+function sampleDeparture(now) {
+  const {year,month,day} = localParts(now);
+  for(let offset=0;offset<8;offset++){
+    const date = new Date(Date.UTC(year,month-1,day+offset,8,30));
+    if(date.getUTCDay()===0 || date.getUTCDay()===6) continue;
+    const time = date.valueOf() - (localParts(date).hour-8)*60*MINUTE;
+    if(time>=now) return time;
+  }
+}
+
+function compactPath(points) {
+  if(points.length<2 || !points.every(point)) return null;
+  const count=Math.min(180,points.length);
+  return Array.from({length:count},(_,i)=>{
+    const {lat,lon}=points[Math.round(i*(points.length-1)/(count-1))];
+    return [Number(lat.toFixed(6)),Number(lon.toFixed(6))];
+  });
+}
+
+function decodeGeometry({points,precision}={}) {
+  if(typeof points!=='string' || ![5,6,7].includes(precision)) return null;
+  let cursor=0,lat=0,lon=0;
+  function delta() {
+    let result=0,shift=0;
+    while(cursor<points.length && shift<=30) {
+      const character=points.charCodeAt(cursor++)-63;
+      if(character<0 || character>63) break;
+      result += (character&31)*2**shift;
+      if(character<32) return result%2 ? -(result+1)/2 : result/2;
+      shift+=5;
+    }
+    throw new Error('Invalid trip geometry');
+  }
+  try {
+    const scale=10**precision;
+    const path=[];
+    let distance=0;
+    while(cursor<points.length) {
+      lat+=delta();
+      lon+=delta();
+      const p={lat:lat/scale,lon:lon/scale};
+      if(!point(p)) return null;
+      if(path.length) distance+=metres(path.at(-1),p);
+      path.push(p);
+    }
+    return path.length>=2 ? {distance,path:compactPath(path)} : null;
+  } catch { return null; }
+}
+
+const publicModes = new Set([
+  'BUS','TRAM','SUBWAY','SUBURBAN','RAIL','FERRY','COACH',
+  'HIGHSPEED_RAIL','LONG_DISTANCE','NIGHT_RAIL','REGIONAL_RAIL',
+]);
+async function transitRoute(fetcher,base,from,to,departure) {
+  const url = new URL('/api/v6/plan',base);
+  url.search = new URLSearchParams({
+    fromPlace:`${from.lat},${from.lon}`,toPlace:`${to.lat},${to.lon}`,
+    time:new Date(departure).toISOString(),timetableView:'false',
+    transitModes:'BUS,TRAM,RAIL,FERRY,COACH',maxTravelTime:'90',timeout:'4',detailedLegs:'true',
+  });
+  const data = await getJson(fetcher,url);
+  if(!Array.isArray(data.itineraries)) throw new Error('Invalid timetable response');
+  const itineraries = data.itineraries.filter(i=>Array.isArray(i.legs) && i.legs.some(leg=>publicModes.has(leg.mode)))
+    .map(i=>({legs:i.legs,seconds:(Date.parse(i.endTime)-departure)/1000,start:Date.parse(i.startTime)}))
+    .filter(i=>i.start>=departure-59_000 && value(i.seconds) && i.seconds<=90*60)
+    .sort((a,b)=>a.seconds-b.seconds);
+  if(!itineraries.length) return {status:'no_route'};
+  const trip=itineraries[0];
+  const legs=trip.legs.map(leg=>{
+    const kind=publicModes.has(leg.mode) ? 'transit' : 'walk';
+    const geometry=decodeGeometry(leg.legGeometry || undefined);
+    const distance=kind==='walk' && value(leg.distance) ? leg.distance : geometry?.distance;
+    return {kind,distance,points:geometry?.path};
+  });
+  return {
+    status:'ok',seconds:trip.seconds,
+    metres:legs.every(leg=>value(leg.distance)) ? legs.reduce((sum,leg)=>sum+leg.distance,0) : null,
+    approximateDistance:true,
+    segments:legs.filter(leg=>leg.points).map(({kind,points})=>({kind,points})),
+    partialPath:legs.some(leg=>!leg.points && leg.distance!==0),
+  };
+}
+
+function error(status,message) { return Object.assign(new Error(message),{status}); }
+function fallbackOrigin(input) {
+  return input ? {label:input.query,precision:input.house?'unverified':input.code?'postcode':'street'} : null;
+}
+
+export function createTravelService(db,{
+  fetcher=fetch,motis=process.env.HOUSEWATCH_MOTIS_URL,localPlaces=process.env.HOUSEWATCH_AMENITIES_FILE,now=Date.now,streetInterval=1100,
+}={}) {
+  const active = new Map();
+  let placesPending, streetQueue=Promise.resolve(), nextStreetRequest=0;
+  // A separately operated local timetable can serve private apps without a hosted account.
+  const motisBase = /^http:\/\/(?:127\.0\.0\.1|localhost):\d{1,5}\/?$/.test(motis || '') ? motis : null;
+
+  function options(listing,record) {
+    const listed=listingAddress(listing);
+    const input=record?.manual || listed;
+    const key=input ? createHash('sha256').update(normalize(input.query)).digest('hex') : null;
+    return {input,key,listed,manual:!!record?.manual};
+  }
+  function display(listing) {
+    if(listing.listing_kind==='general_lead') return {status:'not_property'};
+    const record=db.getConfig('travel.listing.'+listing.id);
+    const {input,key,listed,manual}=options(listing,record);
+    const cached=key && record?.key===key ? record.result : null;
+    return {
+      status:cached?.status || (input?'ready':'needs_location'),
+      origin:cached?.origin || fallbackOrigin(input), manual, hasListingLocation:!!listed,
+      destinations:cached?.destinations || [{...CAMPUS,routes:{}}],
+      sampleDeparture:cached?.sampleDeparture,
+      checkedAt:cached?.checkedAt,
+      isStale:!!cached && (cached.mapVersion!==MAP_VERSION || now()>=record.expires ||
+        cached.transitEnabled!==!!motisBase || (!!motisBase && !(Date.parse(cached.sampleDeparture)>now()))),
+    };
+  }
+  function summary(listing) {
+    const travel=display(listing), routes=travel.destinations?.[0]?.routes || {};
+    const campus=Object.fromEntries(Object.entries(routes)
+      .filter(([mode,route])=>route.status==='ok' && (mode!=='transit' || Date.parse(travel.sampleDeparture)>now()))
+      .map(([mode,route])=>[mode,route.seconds]));
+    return {status:travel.status, approximate:['postcode','street'].includes(travel.origin?.precision), campus};
+  }
+  function catalog() {
+    const key=localPlaces?'travel.catalog.local':'travel.catalog.v1';
+    const cached=db.getConfig(key);
+    if(cached?.places && cached.expires>now() && cached.mapVersion===MAP_VERSION) return Promise.resolve(cached.places);
+    if(cached?.retryAfter>now()) return Promise.resolve(cached.places || []);
+    if(!placesPending) placesPending=loadPlaces(fetcher,localPlaces).then(places=>{
+      db.setConfig(key,{places,expires:now()+7*DAY,mapVersion:MAP_VERSION});
+      return places;
+    }).catch(()=>{
+      const places=cached?.expires>now()-30*DAY ? cached.places : [];
+      db.setConfig(key,{places,expires:cached?.expires,mapVersion:cached?.mapVersion,retryAfter:now()+30*MINUTE});
+      return places;
+    }).finally(()=>{placesPending=null;});
+    return placesPending;
+  }
+  function queueStreet(from,to,mode) {
+    const work=streetQueue.then(async()=>{
+      const budget=db.getConfig('travel.streetBudget',{});
+      const today=new Date(now()).toISOString().slice(0,10);
+      const count=budget.day===today ? budget.count : 0;
+      if(count>=120 || budget.resumeAt>now()) return {status:'unavailable'};
+      if(nextStreetRequest>now()) await wait(nextStreetRequest-now());
+      nextStreetRequest=now()+streetInterval;
+      db.setConfig('travel.streetBudget',{day:today,count:count+1});
+      try { return await streetRoute(fetcher,from,to,mode); }
+      catch {
+        db.setConfig('travel.streetBudget',{day:today,count:count+1,resumeAt:now()+2*MINUTE});
+        return {status:'unavailable'};
+      }
+    });
+    streetQueue=work.catch(()=>{});
+    return work;
+  }
+
+  async function check(listing,body) {
+    if(!body || typeof body!=='object' || Array.isArray(body)) throw error(400,'Enter an address or postcode.');
+    if(listing.listing_kind==='general_lead') throw error(400,'This lead does not name an individual property.');
+    const id=listing.id, storage='travel.listing.'+id;
+    const inProgress=active.get(id);
+    if(inProgress) {
+      if(body.location===undefined) return inProgress;
+      throw error(429,'Travel times are being calculated. Try again in a moment.');
+    }
+    const saved=db.getConfig(storage);
+    const manual=body.location===null ? null : body.location===undefined ? saved?.manual :
+      addressInput(body.location,listing.city || 'Delft');
+    if(body.location!=null && !manual) throw error(400,'Enter a street and house number or a full Dutch postcode.');
+    const {input,key}=options(listing,{manual});
+    if(!input) {
+      if(body.location===null) db.setConfig(storage,null);
+      return display(listing);
+    }
+    const existing=display(listing);
+    if(saved?.key===key && existing.checkedAt && !existing.isStale && !!manual===!!saved.manual) return existing;
+    if(active.size>=3) throw error(429,'Several travel calculations are running. Try again in a moment.');
+    const calculation=calculate(listing,{storage,saved,manual,input,key});
+    active.set(id,calculation);
+    try {
+      return await calculation;
+    } finally {
+      active.delete(id);
+    }
+  }
+
+  async function calculate(listing,{storage,saved,manual,input,key}) {
+    const {id}=listing;
+    let origin;
+    try {
+      origin=saved?.key===key && saved.result?.origin?.lat!=null ? saved.result.origin : await geocode(fetcher,input);
+      if(!origin&&!manual&&input.house&&input.street&&input.city){
+        origin=await geocode(fetcher,{street:input.street,city:input.city,query:input.street+' '+input.city});
+      }
+    }
+    catch { throw error(503,'The address lookup is temporarily unavailable. Try the map links or check again later.'); }
+    if(!origin) throw error(422,'No matching address. Check the house number and city or enter the full postcode.');
+    const places=metres(CAMPUS,origin)<=10_000 ? await catalog() : [];
+    const destinations=[CAMPUS,nearest(places,origin,'gym'),nearest(places,origin,'supermarket')].filter(Boolean);
+    const departure=sampleDeparture(now());
+    const rows=await Promise.all(destinations.map(async destination=>{
+      const previous=saved?.key===key && saved.streetExpires>now() ? saved.result.destinations.find(p=>p.kind===destination.kind && p.lat===destination.lat && p.lon===destination.lon) : null;
+      const [walk,bike,transit]=await Promise.all([
+        Array.isArray(previous?.routes?.walk?.segments) ? previous.routes.walk : queueStreet(origin,destination,'walk'),
+        Array.isArray(previous?.routes?.bike?.segments) ? previous.routes.bike : queueStreet(origin,destination,'bike'),
+        motisBase ? transitRoute(fetcher,motisBase,origin,destination,departure).catch(()=>({status:'unavailable'})) : {status:'link'},
+      ]);
+      return {...destination,routes:{walk,bike,transit}};
+    }));
+    const latest=db.getListing(id);
+    if(!latest || latest.listing_kind==='general_lead' || options(latest,{manual}).key!==key) throw error(409,'The listing location changed. Open its details again.');
+    const limited=rows.some(row=>Object.values(row.routes).some(route=>route.status==='unavailable'));
+    const at=now();
+    const cacheDuration=limited || (rows.length<3 && metres(CAMPUS,origin)<=10_000) ? 10*MINUTE :
+      motisBase ? DAY : 7*DAY;
+    const expires=Math.min(at+cacheDuration,motisBase?departure:Infinity);
+    const streetExpires=saved?.key===key && saved.streetExpires>at ? saved.streetExpires : at+7*DAY;
+    const result={status:'checked',origin,destinations:rows,transitEnabled:!!motisBase,mapVersion:MAP_VERSION,
+      checkedAt:new Date(at).toISOString(),sampleDeparture:motisBase?new Date(departure).toISOString():undefined};
+    db.setConfig(storage,{key,manual,expires,streetExpires,result});
+    return display(latest);
+  }
+  return {display,summary,check};
+}

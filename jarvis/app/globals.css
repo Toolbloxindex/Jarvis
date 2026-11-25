@@ -1,26 +1,321 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/*
+ * Housewatch — monochrome, light.
+ * Ink carries the hierarchy; photography carries the colour.
+ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@theme static {
+  --color-ink: #222222;
+  --color-ink-2: #5e5e5e; /* secondary text, 6.4:1 on white */
+  --color-ink-3: #8a8a8a; /* icons, disabled, never body text */
+  --color-line: #dddddd;
+  --color-line-soft: #ebebeb;
+  --color-subtle: #f7f7f7;
+  --color-hover: #f2f2f2;
+  --color-canvas: #ffffff;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* Layered, neutral shadows. One elevation method per element: shadow OR hairline. */
+  --shadow-pill: 0 0 0 1px rgb(0 0 0 / 0.04), 0 1px 2px rgb(0 0 0 / 0.06),
+    0 4px 12px -2px rgb(0 0 0 / 0.08);
+  --shadow-float: 0 0 0 1px rgb(0 0 0 / 0.04), 0 1px 1px -0.5px rgb(0 0 0 / 0.06),
+    0 3px 3px -1.5px rgb(0 0 0 / 0.06), 0 6px 6px -3px rgb(0 0 0 / 0.06),
+    0 12px 12px -6px rgb(0 0 0 / 0.06), 0 24px 24px -12px rgb(0 0 0 / 0.06);
+  --shadow-sheet: 0 0 0 1px rgb(0 0 0 / 0.04), 0 8px 28px rgb(0 0 0 / 0.12),
+    0 32px 64px -24px rgb(0 0 0 / 0.2);
+
+  --radius-card: 16px;
+}
+
+:root {
+  color-scheme: light;
+  --header-h: 80px;
+  --toolbar-h: 68px;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  /* Locking scroll for the detail sheet must never shift the layout under it. */
+  scrollbar-gutter: stable;
+  text-rendering: optimizeLegibility;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background: var(--color-ink);
+  color: #fff;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+/* Numbers that change should never jitter. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Press feedback for anything clickable. 160ms, never on hover-only devices' hover. */
+.press {
+  transition: transform 160ms var(--ease-out);
+}
+.press:active {
+  transform: scale(0.97);
+}
+
+/* MapLibre: strip the default chrome, keep attribution (required by OSM/OpenFreeMap). */
+.maplibregl-map {
+  font-family: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+}
+.maplibregl-ctrl-attrib {
+  font-size: 10px;
+  background: rgb(255 255 255 / 0.8) !important;
+  border-radius: 8px 0 0 0;
+}
+.maplibregl-ctrl-attrib a {
+  color: var(--color-ink-2) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .press:active {
+    transform: none;
+  }
+}
+
+/*
+ * The one authored moment: the first grid of homes rises in, in reading order.
+ * CSS (not JS) so it plays from the server HTML, and ends visible even if scripts fail.
+ */
+@keyframes hw-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+@keyframes hw-fade {
+  from {
+    opacity: 0;
+  }
+}
+.hw-rise {
+  animation: hw-rise 460ms var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hw-rise {
+    animation-name: hw-fade;
+    animation-delay: 0s !important;
+  }
+}
+
+@keyframes hw-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes hw-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Content swaps inside an open panel: a quick fade, no movement, no blur. */
+.hw-swap {
+  animation: hw-fade-in 180ms var(--ease-out) both;
+}
+
+/* ------------------------------------------------------------------ */
+/* Map pins: plain DOM, CSS-only state changes (transform/opacity).      */
+/* ------------------------------------------------------------------ */
+
+@keyframes hw-pin-in {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+.hw-pin {
+  animation: hw-pin-in 260ms var(--ease-out) both;
+  animation-delay: var(--pin-delay, 0ms);
+}
+.hw-pin-face {
+  transition:
+    scale 180ms var(--ease-out),
+    opacity 150ms var(--ease-out),
+    background-color 150ms ease,
+    color 150ms ease;
+}
+.hw-preview {
+  transform: translate(-50%, 0);
+  transform-origin: 50% 100%;
+  transition:
+    opacity 180ms var(--ease-out),
+    transform 220ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translate(-50%, 6px) scale(0.96);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* View transitions (see lib/view-transition.ts)                        */
+/* ------------------------------------------------------------------ */
+
+/* The page itself never cross-fades; only named parts move. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+::view-transition-group(*) {
+  animation-duration: 340ms;
+  animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* Results: every card, the map and the filters panel move as compositor layers. */
+html[data-vt="results"] .hw-header {
+  view-transition-name: hw-header;
+}
+html[data-vt="results"] .hw-card {
+  view-transition-name: var(--vt-name);
+}
+html[data-vt="results"] .hw-map-panel {
+  view-transition-name: hw-map;
+}
+html[data-vt="results"] .hw-filters-panel {
+  view-transition-name: hw-filters;
+}
+html[data-vt="results"] .hw-results-head {
+  view-transition-name: hw-results-head;
+}
+@keyframes hw-vt-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes hw-vt-exit {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+::view-transition-new(*):only-child {
+  animation: hw-vt-enter 260ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+::view-transition-old(*):only-child {
+  animation: hw-vt-exit 150ms ease-out both;
+}
+/* A card that moves keeps one image; no double-exposure while it travels. */
+html[data-vt="results"]::view-transition-old(*):not(:only-child) {
+  animation: none;
+  opacity: 0;
+}
+html[data-vt="results"]::view-transition-new(*):not(:only-child) {
+  animation: none;
+}
+
+/*
+ * Groups stack in capture order, so groups that only exist in the new state (the sheet,
+ * entering cards) would paint over older ones (the photo, the header). Fix the order.
+ */
+html::view-transition-group(hw-backdrop) {
+  z-index: 1;
+}
+html::view-transition-group(hw-sheet) {
+  z-index: 2;
+}
+html::view-transition-group(hw-photo) {
+  z-index: 3;
+}
+html::view-transition-group(hw-header) {
+  z-index: 4;
+}
+
+/* Detail: the card photo becomes the hero while the sheet rises. */
+::view-transition-group(hw-photo) {
+  animation-duration: 440ms;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+::view-transition-old(hw-photo),
+::view-transition-new(hw-photo) {
+  height: 100%;
+  object-fit: cover;
+  animation-duration: 440ms;
+}
+@keyframes hw-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+}
+@keyframes hw-sheet-out {
+  to {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+::view-transition-new(hw-sheet):only-child {
+  animation: hw-sheet-in 400ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+::view-transition-old(hw-sheet):only-child {
+  animation: hw-sheet-out 220ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+::view-transition-new(hw-backdrop):only-child {
+  animation: hw-fade-in 320ms ease-out both;
+}
+::view-transition-old(hw-backdrop):only-child {
+  animation: hw-fade-out 260ms ease-out both;
+}
+
+/* Saving a home: the one small moment of delight. */
+@keyframes hw-pop {
+  0% {
+    scale: 0.8;
+  }
+  55% {
+    scale: 1.14;
+  }
+  100% {
+    scale: 1;
+  }
+}
+.hw-pop {
+  animation: hw-pop 340ms var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .hw-pop,
+  .hw-pin,
+  .hw-swap {
+    animation: none;
+  }
 }
