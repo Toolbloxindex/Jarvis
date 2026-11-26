@@ -141,12 +141,26 @@ async function loadPlaces(fetcher,localFile) {
   }
   const {south,west,north,east} = ALLOWED_AREA;
   const bbox = [south,west,north,east].join(',');
-  const query = `[out:json][timeout:12];(nwr["shop"="supermarket"](${bbox});nwr["leisure"="fitness_centre"](${bbox}););out center;`;
-  const url = new URL('https://overpass-api.de/api/interpreter');
-  url.searchParams.set('data',query);
-  const data = await getJson(fetcher,url,{timeout:14000});
-  return catalogPlaces(data);
+  const query = `[out:json][timeout:25];(nwr["shop"="supermarket"](${bbox});nwr["leisure"="fitness_centre"](${bbox}););out center;`;
+  // The main Overpass server is often slow (30 s+ measured); public mirrors carry the same OSM data.
+  // Try each in turn so one busy server does not leave every home without nearby amenities.
+  let lastError;
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    const url = new URL(endpoint);
+    url.searchParams.set('data',query);
+    try {
+      return catalogPlaces(await getJson(fetcher,url,{timeout:30000}));
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error('No amenities provider answered');
 }
+const OVERPASS_ENDPOINTS = [
+  'https://overpass.private.coffee/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
 
 export function catalogPlaces(data, { requireBoth = true } = {}) {
   if(data?.remark || !Array.isArray(data?.elements)) throw new Error('Incomplete amenities response');
