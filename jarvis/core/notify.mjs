@@ -39,6 +39,8 @@ export function loadMatchingLib() {
         EMPTY_FILTERS: query.EMPTY_FILTERS,
         median: scores.median,
         universityById: universities.universityById,
+        regionBox: universities.regionBox,
+        inRegionBox: universities.inRegionBox,
         DEFAULT_SEARCH: defaults.DEFAULT_SEARCH,
         valueOf: sync.valueOf,
       };
@@ -73,9 +75,12 @@ export function findMatches({ lib, listings, doc, since, nowIso, perM2 }) {
   const filters = { ...lib.EMPTY_FILTERS, ...(lib.valueOf(doc, 'filters') ?? {}) };
   const hidden = new Set([...(lib.valueOf(doc, 'saved') ?? []), ...(lib.valueOf(doc, 'passed') ?? [])]);
   const university = lib.universityById(search.university);
+  // The page shows one region (box around the university's student city); alerts stay inside it.
+  const box = lib.regionBox ? lib.regionBox(university.region) : null;
   const views = [];
   for (const listing of listings) {
     if (!(Date.parse(listing.listedAt) > since) || hidden.has(listing.id)) continue;
+    if (box && !lib.inRegionBox(box, listing.location.lat, listing.location.lng)) continue;
     const view = lib.viewListing(listing, search, university, nowIso, perM2);
     if (view.status === 'outside' || view.travel.km > ALERT_RADIUS_KM || !lib.passesFilters(view, filters)) continue;
     views.push(view);

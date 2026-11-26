@@ -37,8 +37,9 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           HOUSEWATCH_REVALIDATE_URL: ${{ secrets.HOUSEWATCH_REVALIDATE_URL }}
           HOUSEWATCH_REVALIDATE_TOKEN: ${{ secrets.HOUSEWATCH_REVALIDATE_TOKEN }}
-          # National collection: 40 homes located/routed per run, OSRM capped per day.
-          HOUSEWATCH_TRAVEL_BUDGET: ${{ vars.HOUSEWATCH_TRAVEL_BUDGET || '40' }}
+          # National collection: 60 homes located per run, routed in batched OSRM tables
+          # within HOUSEWATCH_ROUTING_SECONDS (default 180); OSRM requests capped per day.
+          HOUSEWATCH_TRAVEL_BUDGET: ${{ vars.HOUSEWATCH_TRAVEL_BUDGET || '60' }}
           HOUSEWATCH_OSRM_DAILY: ${{ vars.HOUSEWATCH_OSRM_DAILY || '1500' }}
           # AI extraction (docs/AI-EXTRACTION.md). Off until a key is set; shadow mode until approved.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

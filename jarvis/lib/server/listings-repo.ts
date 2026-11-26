@@ -6,7 +6,8 @@ import { readListings, type ListingsResult } from "./listings-data.ts";
 import { readUiAmenities, toUiFeed, type UiFeed } from "./to-ui-listing.ts";
 import { hasSupabaseListings, readSupabaseAmenities, readSupabaseListings, type Bounds } from "./supabase-feed.ts";
 import {
-  DEFAULT_UNIVERSITY, REGION_RADIUS_KM, STUDENT_CITIES, studentCityById, universityById, type StudentCityId,
+  DEFAULT_UNIVERSITY, REGION_RADIUS_KM, STUDENT_CITIES, inRegionBox, regionBox, studentCityById, universityById,
+  type StudentCityId,
 } from "../universities.ts";
 
 export type { LiveListing, ListingsResult } from "./listings-data.ts";
@@ -54,10 +55,7 @@ export interface RegionPage extends LivePage {
 
 /** The box the site loads for a region: REGION_RADIUS_KM around the student city's centre. */
 export function regionBounds(region: StudentCityId, radiusKm = REGION_RADIUS_KM): Bounds {
-  const city = studentCityById(region) ?? studentCityById(DEFAULT_REGION)!;
-  const dLat = radiusKm / 111.2;
-  const dLng = radiusKm / (111.2 * Math.cos((city.lat * Math.PI) / 180));
-  return { south: city.lat - dLat, north: city.lat + dLat, west: city.lng - dLng, east: city.lng + dLng };
+  return regionBox(studentCityById(region) ? region : DEFAULT_REGION, radiusKm);
 }
 
 export const DEFAULT_REGION: StudentCityId = universityById(DEFAULT_UNIVERSITY).region;
@@ -67,8 +65,7 @@ export function regionId(value: string | null | undefined): StudentCityId {
   return (STUDENT_CITIES.find((city) => city.id === value)?.id ?? DEFAULT_REGION) as StudentCityId;
 }
 
-const inBounds = (bounds: Bounds, lat: number | null, lng: number | null) =>
-  lat !== null && lng !== null && lat >= bounds.south && lat <= bounds.north && lng >= bounds.west && lng <= bounds.east;
+const inBounds = inRegionBox;
 
 /**
  * The homes around one student city, ready for the UI. Cached per region and refreshed by the

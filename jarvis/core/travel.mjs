@@ -504,5 +504,92 @@ export function createTravelService(db,{
     await db.setConfig(storage,record);
     return show(latest,record);
   }
-  return {display,summary,check};
+
+  /**
+   * Collector path for many homes. Each home is located first (PDOK, quick); then homes are routed
+   * together: one OSRM table per mode for up to `batch` homes instead of two requests per home. The
+   * public OSRM server answers a table in ~9 s whatever its size, so batching is what makes national
+   * volume possible. Past `deadline`, located homes are saved without routes (they show on the site
+   * with distance estimates) and reported as 'deferred' so the collector routes them next run.
+   * Returns Map(listing id → 'updated' | 'deferred' | 'fresh' | 'skipped' | 'failed:<status>').
+   */
+  async function checkMany(listings,{batch=12,deadline=Infinity}={}) {
+    const outcome=new Map();
+    const ready=[];
+    for(const listing of listings) {
+      if(listing.listing_kind==='general_lead') { outcome.set(listing.id,'skipped'); continue; }
+      const storage='travel.listing.'+listing.id;
+      const saved=await db.getConfig(storage);
+      const manual=saved?.manual;
+      const {input,key,origin:sourceOrigin}=options(listing,{manual});
+      if(!input&&!sourceOrigin) { outcome.set(listing.id,'skipped'); continue; }
+      const existing=show(listing,saved);
+      if(saved?.key===key && existing.checkedAt && !existing.isStale && !!manual===!!saved.manual) { outcome.set(listing.id,'fresh'); continue; }
+      let origin;
+      try {
+        origin=sourceOrigin || (saved?.key===key && saved.result?.origin?.lat!=null ? saved.result.origin : await lookup(input));
+        if(!origin&&!manual&&input?.house&&input.street&&input.city){
+          origin=await lookup({street:input.street,city:input.city,query:input.street+' '+input.city});
+        }
+      } catch { outcome.set(listing.id,'failed:503'); continue; }
+      if(!origin) { outcome.set(listing.id,'failed:422'); continue; }
+      const places=await catalog(origin);
+      const campuses=nearbyCampuses(origin);
+      const destinations=[...campuses,nearest(places,origin,'gym'),nearest(places,origin,'supermarket')].filter(Boolean);
+      ready.push({listing,storage,manual,key,origin,campuses,destinations});
+    }
+    // The Delft rail model needs Delft station rows: route homes near Delft in their own tables.
+    const delftRail=item=>!motisBase && nearDelftRail(item.origin);
+    for(const group of [ready.filter(delftRail),ready.filter(item=>!delftRail(item))]) {
+      for(let start=0;start<group.length;start+=batch) {
+        const chunk=group.slice(start,start+batch);
+        const routed=now()<deadline;
+        for(const [id,state] of await routeChunk(chunk,{estimateTransit:group.length>0&&delftRail(group[0]),routed})) outcome.set(id,state);
+      }
+    }
+    return outcome;
+  }
+
+  async function routeChunk(chunk,{estimateTransit,routed}) {
+    // Union of every home's destinations; each home keeps the column of each of its own.
+    const union=[], slot=new Map();
+    for(const item of chunk) item.columns=item.destinations.map(destination=>{
+      const id=destination.id ?? `${destination.kind}:${destination.lat},${destination.lon}`;
+      if(!slot.has(id)) { slot.set(id,union.length); union.push(destination); }
+      return slot.get(id);
+    });
+    const plan=streetTablePlan(chunk.map(item=>item.origin),union,estimateTransit);
+    const skip={status:routed?'no_route':'unavailable'};
+    const [walk,bike]=routed && union.length ? await Promise.all([queueStreet(plan,'walk'),queueStreet(plan,'bike')]) : [skip,skip];
+    const departure=sampleDeparture(now());
+    const states=[];
+    for(const [index,item] of chunk.entries()) {
+      const {listing,storage,manual,key,origin,campuses,destinations,columns}=item;
+      const own=motisBase && routed ? await Promise.all(destinations.map(destination=>transitRoute(fetcher,motisBase,origin,destination,departure)
+        .catch(()=>({status:'unavailable'})))) : undefined;
+      const transit=own ? union.map((_,column)=>own[columns.indexOf(column)]) : undefined;
+      const nearby=new Set(campuses.map(campus=>campus.id));
+      const travelTimes=Object.fromEntries(Object.entries(campusTravelTimes(index,origin,union,plan,{walk,bike,transit}))
+        .filter(([id])=>nearby.has(id)));
+      const rows=destinations.map((destination,position)=>{
+        const route=travelTimes[destination.id];
+        const estimated=route?.source==='estimated' ? {status:'estimated',seconds:route.transit*60} : {status:'link'};
+        const column=columns[position];
+        return {...destination,routes:{walk:tableRoute(walk,index,column),bike:tableRoute(bike,index,column),transit:own?.[position] ?? estimated}};
+      });
+      const latest=await db.getListing(listing.id);
+      if(!latest || latest.listing_kind==='general_lead' || options(latest,{manual}).key!==key) { states.push([listing.id,'failed:409']); continue; }
+      const limited=rows.some(row=>Object.values(row.routes).some(route=>route.status==='unavailable'));
+      const at=now();
+      const amenitiesMissing=!!catalogCity(origin) && rows.length<campuses.length+2;
+      const cacheDuration=limited || amenitiesMissing ? 10*MINUTE : motisBase ? DAY : 7*DAY;
+      const expires=Math.min(at+cacheDuration,motisBase?departure:Infinity);
+      const result={status:'checked',origin,destinations:rows,travelTimes,transitEnabled:!!motisBase,mapVersion:MAP_VERSION,campusSignature:CAMPUS_SIGNATURE,
+        checkedAt:new Date(at).toISOString(),sampleDeparture:motisBase?new Date(departure).toISOString():undefined};
+      await db.setConfig(storage,{key,manual,expires,streetExpires:at+7*DAY,result});
+      states.push([listing.id,routed && !limited ? 'updated' : 'deferred']);
+    }
+    return states;
+  }
+  return {display,summary,check,checkMany};
 }

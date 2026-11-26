@@ -69,6 +69,45 @@ test('all mock listings contain a route to every campus around Delft', () => {
   for (const listing of listings) assert.deepEqual(Object.keys(listing.travelTimes), original);
 });
 
+test('collector routing batches many homes into one OSRM table per mode, and defers past the deadline', async (t) => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const homes = [
+    { id: 'g1', lat: 53.2194, lng: 6.5665 }, { id: 'g2', lat: 53.2301, lng: 6.5502 }, { id: 'g3', lat: 53.2105, lng: 6.5801 },
+    { id: 'e1', lat: 51.4416, lng: 5.4697 }, { id: 'd1', lat: 52.0116, lng: 4.3571 },
+  ].map(({ id, lat, lng }) => store.upsertListing({ id, source: 'kamernet', source_id: id, url: 'https://example.invalid/' + id,
+    city: 'X', address: 'Voorbeeldstraat ' + id, location: { lat, lng, precision: 'exact' } }).listing);
+  for (const city of ['groningen', 'eindhoven', 'delft']) {
+    store.setConfig('travel.catalog.' + city, { places: [], expires: Date.now() + 600_000, mapVersion: 2 });
+  }
+  const requests = [];
+  const travel = createTravelService(store, { streetInterval: 0, motis: '', localPlaces: '', fetcher: async (url) => {
+    requests.push(url.searchParams.get('sources').split(';').length);
+    const rows = url.searchParams.get('sources').split(';').length;
+    const columns = url.searchParams.get('destinations').split(';').length;
+    const matrix = (v) => Array.from({ length: rows }, () => Array(columns).fill(v));
+    return Response.json({ code: 'Ok', durations: matrix(600), distances: matrix(1800) });
+  } });
+  const outcome = await travel.checkMany(homes);
+  // Delft homes route in their own table (rail model); the four others share one table per mode.
+  assert.equal(requests.length, 4);
+  assert.deepEqual([...outcome.values()], ['updated', 'updated', 'updated', 'updated', 'updated']);
+  const groningen = travel.summary ? store.getConfig('travel.listing.g2').result.travelTimes : null;
+  assert.deepEqual(Object.keys(groningen).sort(), ['hanze', 'rug', 'rug-zernike']);
+  // Eindhoven reaches Tilburg and Den Bosch campuses within 40 km, never Groningen's.
+  const eindhoven = Object.keys(store.getConfig('travel.listing.e1').result.travelTimes);
+  assert.ok(['tue', 'fontys-eindhoven', 'tiu'].every((id) => eindhoven.includes(id)) && !eindhoven.includes('rug'));
+  // Already routed: nothing to do.
+  assert.ok([...(await travel.checkMany(homes)).values()].every((state) => state === 'fresh'));
+  // Past the deadline: located and saved, but not routed, and handed back for a later run.
+  const late = store.upsertListing({ id: 'late', source: 'kamernet', source_id: 'late', url: 'https://example.invalid/late',
+    city: 'X', address: 'Voorbeeldstraat 9', location: { lat: 53.22, lng: 6.56, precision: 'exact' } }).listing;
+  const before = requests.length;
+  assert.equal((await travel.checkMany([late], { deadline: 0 })).get('late'), 'deferred');
+  assert.equal(requests.length, before);
+  assert.equal(store.getConfig('travel.listing.late').result.origin.lat, 53.22);
+});
+
 test('national routing: nearby campuses, Delft rail model only near Delft, general transit estimate', () => {
   const groningen = { lat: 53.2194, lon: 6.5665 };
   const nearby = nearbyCampuses(groningen).map(({ id }) => id);

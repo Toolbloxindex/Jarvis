@@ -164,5 +164,28 @@ export function inNetherlands(lat: unknown, lng: unknown) {
     lat >= NL_BOUNDS.south && lat <= NL_BOUNDS.north && lng >= NL_BOUNDS.west && lng <= NL_BOUNDS.east;
 }
 
-/** Homes shown for a university: within this distance of its campus. */
+/**
+ * The site loads homes one region at a time: a box reaching this far (north/south/east/west) from
+ * the centre of the university's student city. Alerts use the same box, so an alert never points
+ * to a home the page would not show.
+ */
 export const REGION_RADIUS_KM = 20;
+
+export interface RegionBox {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}
+
+export function regionBox(region: string, radiusKm = REGION_RADIUS_KM): RegionBox {
+  const city = studentCityById(region) ?? STUDENT_CITIES[0];
+  const dLat = radiusKm / 111.2;
+  const dLng = radiusKm / (111.2 * Math.cos((city.lat * Math.PI) / 180));
+  return { south: city.lat - dLat, north: city.lat + dLat, west: city.lng - dLng, east: city.lng + dLng };
+}
+
+export function inRegionBox(box: RegionBox, lat: number | null | undefined, lng: number | null | undefined) {
+  return typeof lat === "number" && typeof lng === "number" &&
+    lat >= box.south && lat <= box.north && lng >= box.west && lng <= box.east;
+}
