@@ -243,50 +243,101 @@ function MoveOutSection({ criteria, onChange, now, months = 2, onPick }: PanelPr
   );
 }
 
+/** Accent- and case-insensitive text for matching ("Tilburg" ≈ "tilburg", "Ede" ≈ "edé"). */
+const fold = (value: string) => value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+const SEARCH_TEXT = new Map(UNIVERSITIES.map((u) => [u.id, fold([u.name, u.short, u.city, u.place].join(" "))]));
+/** Cities in the order campuses are listed (Randstad first), each with its campuses. */
+const BY_CITY = (() => {
+  const groups = new Map<string, (typeof UNIVERSITIES)[number][]>();
+  for (const u of UNIVERSITIES) groups.set(u.city, [...(groups.get(u.city) ?? []), u]);
+  return [...groups];
+})();
+
 export function UniversityPanel({ criteria, onChange, onAdvance }: PanelProps) {
-  const cities = [...new Set(UNIVERSITIES.map((u) => u.city))];
+  const [query, setQuery] = useState("");
+  const terms = fold(query).split(/\s+/).filter(Boolean);
+  const groups = terms.length
+    ? BY_CITY.map(([city, list]) => [city, list.filter((u) => terms.every((t) => SEARCH_TEXT.get(u.id)!.includes(t)))] as const)
+        .filter(([, list]) => list.length > 0)
+    : BY_CITY;
+  const pick = (id: string) => {
+    if (criteria.university !== id) onChange({ ...criteria, university: id });
+    onAdvance?.();
+  };
   return (
-    <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
-      {cities.map((city) => (
-        <div key={city}>
-          <p className="mb-1.5 text-[12px] font-semibold tracking-[0.02em] text-ink-2">{city}</p>
-          <div role="radiogroup" aria-label={`Universities in ${city}`} className="space-y-1">
-            {UNIVERSITIES.filter((u) => u.city === city).map((u) => {
-              const selected = criteria.university === u.id;
-              return (
-                <button
-                  key={u.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  onClick={() => {
-                    if (!selected) onChange({ ...criteria, university: u.id });
-                    onAdvance?.();
-                  }}
-                  className={cn(
-                    "press flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors duration-150",
-                    selected ? "bg-subtle" : "hover:bg-hover",
-                  )}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[14px] font-semibold">{u.name}</span>
-                    <span className="block truncate text-[12px] text-ink-2">Times to {u.place}</span>
-                  </span>
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "grid size-5 shrink-0 place-items-center rounded-full transition-colors duration-150",
-                      selected ? "bg-ink text-white" : "shadow-[inset_0_0_0_1.5px_var(--color-line)]",
-                    )}
-                  >
-                    {selected && <CheckIcon size={11} weight="bold" />}
-                  </span>
-                </button>
-              );
-            })}
+    <div>
+      <label className="relative block">
+        <span className="sr-only">Find a university or city</span>
+        <MagnifyingGlassIcon
+          size={16}
+          weight="bold"
+          aria-hidden="true"
+          className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-ink-2"
+        />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter takes the first match: type "twente", press Enter.
+            if (e.key === "Enter" && groups[0]?.[1][0]) {
+              e.preventDefault();
+              pick(groups[0][1][0].id);
+            }
+          }}
+          placeholder="University or city"
+          autoComplete="off"
+          spellCheck={false}
+          className="h-11 w-full rounded-xl bg-subtle pr-3 pl-10 text-[15px] outline-none placeholder:text-ink-3 focus:shadow-[inset_0_0_0_1.5px_var(--color-ink)]"
+        />
+      </label>
+      <div className="-mx-1 mt-3 max-h-[min(380px,52vh)] overflow-y-auto overscroll-contain px-1 [scrollbar-width:thin]">
+        {groups.length === 0 ? (
+          <p className="px-3 py-6 text-center text-[14px] text-ink-2">No university or city matches “{query.trim()}”.</p>
+        ) : (
+          <div className="gap-x-6 sm:columns-2">
+            {groups.map(([city, list]) => (
+              <div key={city} className="mb-4 break-inside-avoid">
+                <p className="mb-1 px-3 text-[12px] font-semibold tracking-[0.02em] text-ink-2">{city}</p>
+                <div role="radiogroup" aria-label={`Universities in ${city}`} className="space-y-0.5">
+                  {list.map((u) => {
+                    const selected = criteria.university === u.id;
+                    return (
+                      <button
+                        key={u.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => pick(u.id)}
+                        className={cn(
+                          "press flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors duration-150",
+                          selected ? "bg-subtle" : "hover:bg-hover",
+                        )}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[14px] font-semibold">{u.short}</span>
+                          <span className="block truncate text-[12px] text-ink-2">
+                            {u.short === u.name ? `Times to ${u.place}` : `${u.name} · ${u.place}`}
+                          </span>
+                        </span>
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            "grid size-5 shrink-0 place-items-center rounded-full transition-colors duration-150",
+                            selected ? "bg-ink text-white" : "shadow-[inset_0_0_0_1.5px_var(--color-line)]",
+                          )}
+                        >
+                          {selected && <CheckIcon size={11} weight="bold" />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
-        </div>
-      ))}
+        )}
+      </div>
     </div>
   );
 }

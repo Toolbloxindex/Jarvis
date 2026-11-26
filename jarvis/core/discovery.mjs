@@ -294,10 +294,10 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
     }catch(e){
      // One city's search failing (a renamed slug, a format change) must not stop the other cities.
      if(['blocked','policy_blocked'].includes(e.status)||e?.name==='PostgresError'||!source.scopes)throw e;
-     errors++;scopeErrors.push(`${scope.key}: ${e.message}`);await store.setConfig(stateKey,null);cursor=(cursor+1)%scopes.length;continue;
+     errors++;scopeErrors.push(`${scope.key}: ${e.message}`);await store.setConfig(stateKey,{});cursor=(cursor+1)%scopes.length;continue;
     }
     if(queue.length){next=queue;await store.setConfig(stateKey,{next:queue.slice(0,40),startedAt,seen:[...seen].slice(-60)});break;}
-    await store.setConfig(stateKey,null);completed.push({scope,startedAt});cursor=(cursor+1)%scopes.length;
+    await store.setConfig(stateKey,{});completed.push({scope,startedAt});cursor=(cursor+1)%scopes.length;
    }
    await store.setConfig(cursorKey,cursor);complete=completed.length===scopes.length;
    const oldRows=(await store.getListings(source.id)).filter(l=>l.source===source.id&&l.discovery===true);
