@@ -295,7 +295,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="border-t border-line-soft py-8 first:border-t-0 first:pt-0">
+    <section className="hw-detail-section border-t border-line-soft py-8 first:border-t-0 first:pt-0">
       <div className="mb-4 flex items-baseline justify-between gap-4">
         <h2 className="text-[20px] leading-7 font-semibold tracking-[-0.02em]">{title}</h2>
         {aside}

@@ -30,7 +30,7 @@ export function flyIntoStyle(id: string, binId: string) {
       100% { transform: translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(0.06); opacity: 0.5; }
     }
     html::view-transition-group(card-${CSS.escape(id)}) { z-index: 50; }
-    ${sel(id)} { opacity: 1; animation: ${k} 460ms cubic-bezier(0.5, 0, 0.2, 1) both; transform-origin: 50% 40%; }`;
+    ${sel(id)} { opacity: 1; animation: ${k} 380ms cubic-bezier(0.5, 0, 0.2, 1) both; transform-origin: 50% 40%; }`;
   return style;
 }
 

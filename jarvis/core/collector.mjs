@@ -1,6 +1,7 @@
 import { runPublicDiscovery } from './discovery.mjs';
 import { createTravelService, listingTravelKey } from './travel.mjs';
 import { runAiPass } from './ai-collect.mjs';
+import { runNotifications } from './notify.mjs';
 
 const queueKey = 'collector.travel.pending';
 
@@ -33,6 +34,7 @@ export async function runCollector(store, {
   fetcher = fetch,
   budget = travelBudget,
   aiPass = runAiPass,
+  notify = runNotifications,
   revalidateUrl = process.env.HOUSEWATCH_REVALIDATE_URL,
   revalidateToken = process.env.HOUSEWATCH_REVALIDATE_TOKEN,
 } = {}) {
@@ -81,5 +83,15 @@ export async function runCollector(store, {
   const revalidated = counts.added || counts.changed || travelUpdated || ai.aiUpdated
     ? await notifyRevalidation(fetcher, revalidateUrl, revalidateToken)
     : null;
-  return { ...counts, travelChecked, travelUpdated, travelFailed, ...ai, revalidated };
+  // New-home alerts (email digest + web push). Never fails the collection.
+  let alerts = {};
+  if (counts.added || travelUpdated) {
+    try {
+      alerts = await notify(store);
+    } catch (error) {
+      alerts = { alertErrors: 1 };
+      console.error('Alerts failed:', String(error?.message ?? error).slice(0, 200));
+    }
+  }
+  return { ...counts, travelChecked, travelUpdated, travelFailed, ...ai, revalidated, ...alerts };
 }

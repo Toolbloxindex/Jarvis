@@ -48,6 +48,15 @@ jobs:
           HOUSEWATCH_AI_BUDGET: ${{ vars.HOUSEWATCH_AI_BUDGET || '20' }}
           HOUSEWATCH_AI_DAILY_BUDGET: ${{ vars.HOUSEWATCH_AI_DAILY_BUDGET || '300' }}
           HOUSEWATCH_AI_APPLY: ${{ vars.HOUSEWATCH_AI_APPLY || '0' }}
+          # New-home alerts (core/notify.mjs): public feed + email (Resend) + web push (VAPID).
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          HOUSEWATCH_SITE_URL: ${{ vars.HOUSEWATCH_SITE_URL || 'https://housewatch-one.vercel.app' }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
 
   prune:
     if: github.event.schedule == '41 3 * * *'

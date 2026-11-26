@@ -3,7 +3,7 @@
 import { XIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { cn } from "@/lib/cn";
-import { cursorStore, hoverStore } from "@/lib/hover-store";
+import { cursorStore, hoverStore, pointerIntent } from "@/lib/hover-store";
 
 /**
  * Keyboard triage for going through many homes quickly. Invisible until an arrow key is
@@ -12,21 +12,28 @@ import { cursorStore, hoverStore } from "@/lib/hover-store";
  *   ← → ↑ ↓ move · S save · D pass · E open/close · Z undo last pass · ? help · Esc leave
  */
 
-const CARD = "[data-card-id]:not([hidden])";
+/** Navigable cards: visible, and not on their way out (a save/pass animation in flight). */
+const CARD = "[data-card-id]:not([hidden]):not([data-leaving])";
 const cards = () => [...document.querySelectorAll<HTMLElement>(CARD)];
 const byId = (id: string | null) =>
   id ? document.querySelector<HTMLElement>(`${CARD}[data-card-id="${CSS.escape(id)}"]`) : null;
 
-function show(id: string | null | undefined) {
+function show(id: string | null | undefined, instant = false) {
   if (!id) return;
   const el = byId(id);
   if (!el) return;
   cursorStore.set(id);
   hoverStore.set(id);
-  el.scrollIntoView({
-    block: "nearest",
-    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-  });
+  // Scroll only when the card is not fully visible below the sticky header. Held keys jump
+  // instantly so smooth scrolls never pile up.
+  const r = el.getBoundingClientRect();
+  const top = (document.querySelector<HTMLElement>("[data-sticky-top]")?.getBoundingClientRect().bottom ?? 0) + 12;
+  const bottom = window.innerHeight - 16;
+  const dy = r.top < top ? r.top - top : r.bottom > bottom ? Math.min(r.bottom - bottom, r.top - top) : 0;
+  if (dy !== 0) {
+    const smooth = !instant && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollBy({ top: dy, behavior: smooth ? "smooth" : "instant" });
+  }
   // Keep assistive tech in sync without letting focus rings fight the cursor.
   el.querySelector<HTMLElement>("h3 button")?.focus({ preventScroll: true });
 }
@@ -92,15 +99,25 @@ export function useTriage({ enabled, onSave, onPass, onOpen, onUndo }: TriageOpt
     handlers.current = { onSave, onPass, onOpen, onUndo };
   }, [onSave, onPass, onOpen, onUndo]);
 
-  // While triaging, moving the mouse onto a tile hands the cursor to it.
+  // While triaging, moving the mouse onto a tile hands the cursor to it (real moves only).
   useEffect(
     () =>
       hoverStore.subscribe(() => {
         const h = hoverStore.get();
-        if (h && cursorStore.get() !== null) cursorStore.set(h);
+        if (h && cursorStore.get() !== null && pointerIntent()) cursorStore.set(h);
       }),
     [],
   );
+
+  // Spotlight: while a cursor exists, other cards step back (CSS on html[data-triage]).
+  useEffect(() => {
+    const root = document.documentElement;
+    if (active) root.dataset.triage = "";
+    else delete root.dataset.triage;
+    return () => {
+      delete root.dataset.triage;
+    };
+  }, [active]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -139,7 +156,7 @@ export function useTriage({ enabled, onSave, onPass, onOpen, onUndo }: TriageOpt
             list[0];
           return show(start.dataset.cardId);
         }
-        return show(neighbour(list, byId(id)!, key).dataset.cardId);
+        return show(neighbour(list, byId(id)!, key).dataset.cardId, e.repeat);
       }
 
       const k = key.toLowerCase();
@@ -154,6 +171,12 @@ export function useTriage({ enabled, onSave, onPass, onOpen, onUndo }: TriageOpt
         e.preventDefault();
         const i = list.findIndex((c) => c.dataset.cardId === target);
         const next = list[i + 1] ?? list[i - 1];
+        // Take the card out of navigation now; it is still animating out for a few hundred ms.
+        const leaving = byId(target);
+        if (leaving) {
+          leaving.dataset.leaving = "";
+          window.setTimeout(() => delete leaving.dataset.leaving, 1200);
+        }
         if (k === "s") handlers.current.onSave(target);
         else handlers.current.onPass(target);
         // Both actions take the card out of the feed: keep the cursor where the eye is.

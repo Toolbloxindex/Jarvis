@@ -215,11 +215,19 @@ export interface SyncConfig {
 let config: SyncConfig | null = null;
 let key = "";
 
+/** Access token of the optional email account (lib/account.ts); null = anonymous. */
+let authToken: string | null = null;
+export function setSyncAuthToken(token: string | null) {
+  authToken = token;
+}
+
 async function rpc<T>(fn: string, body: Record<string, unknown>, keepalive = false): Promise<T> {
   if (!config) throw new Error("sync is not configured");
+  const headers: Record<string, string> = { apikey: config.anonKey, "content-type": "application/json" };
+  if (authToken) headers.authorization = `Bearer ${authToken}`;
   const res = await fetch(`${config.url}/rest/v1/rpc/${fn}`, {
     method: "POST",
-    headers: { apikey: config.anonKey, "content-type": "application/json" },
+    headers,
     body: JSON.stringify(body),
     keepalive,
   });
@@ -356,9 +364,16 @@ export type ClaimResult = "linked" | "already" | "invalid";
 export async function claimPairCode(code: string): Promise<ClaimResult> {
   const claimed = await rpc<string | null>("sync_pair_claim", { p_code: code });
   if (!claimed) return "invalid";
-  if (claimed === key) return "already";
-  key = claimed;
-  rememberKey(key);
+  return adoptKey(claimed);
+}
+
+/**
+ * Switch this browser to another device group's key (pairing code or email sign-in). Nothing is
+ * lost: this browser's list is merged into theirs and pushed back.
+ */
+export async function adoptKey(next: string): Promise<"linked" | "already"> {
+  if (next === key) return "already";
+  setKey(next);
   save(VERSION_KEY, 0);
   await new Promise<void>((resolve) => serial(pullNow).then(resolve));
   return "linked";
@@ -366,8 +381,27 @@ export async function claimPairCode(code: string): Promise<ClaimResult> {
 
 /** Stop syncing with the other devices. This browser keeps a private copy under a new key. */
 export async function unlinkDevice() {
-  key = newKey();
-  rememberKey(key);
+  setKey(newKey());
   save(VERSION_KEY, 0);
   await new Promise<void>((resolve) => serial(pushNow).then(resolve));
+}
+
+/** This browser's sync key ("" before sync starts). It is a secret: send it only to Supabase. */
+export const currentSyncKey = () => key;
+/** The configured Supabase settings (null before sync starts). */
+export const syncConfig = () => config;
+export { rpc as syncRpc };
+
+type KeyListener = (next: string, previous: string) => void;
+const keyListeners = new Set<KeyListener>();
+/** Notified when this browser moves to another key (pairing, email sign-in, unlink). */
+export function onSyncKeyChange(listener: KeyListener) {
+  keyListeners.add(listener);
+  return () => void keyListeners.delete(listener);
+}
+function setKey(next: string) {
+  const previous = key;
+  key = next;
+  rememberKey(key);
+  for (const l of keyListeners) l(next, previous);
 }

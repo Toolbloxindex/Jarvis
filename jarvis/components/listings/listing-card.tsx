@@ -5,7 +5,7 @@ import useEmblaCarousel from "embla-carousel-react";
 import Image from "next/image";
 import { memo, useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
-import { hoverStore, useIsCursor } from "@/lib/hover-store";
+import { cursorStore, hoverStore, pointerIntent, useIsCursor } from "@/lib/hover-store";
 import { formatDay, formatEUR, formatMonths, isAvailableNow } from "@/lib/listings/format";
 import { outsideReason, type ListingView } from "@/lib/listings/match";
 import type { Listing } from "@/lib/listings/types";
@@ -246,7 +246,10 @@ export const ListingCard = memo(function ListingCard({
     <article
       data-cursor={isCursor || undefined}
       className="group relative"
-      onPointerEnter={(e) => e.pointerType === "mouse" && hoverStore.set(listing.id)}
+      onPointerEnter={(e) => {
+        // While triaging, ignore cards that merely slid under a still mouse (scroll, reflow).
+        if (e.pointerType === "mouse" && (cursorStore.get() === null || pointerIntent())) hoverStore.set(listing.id);
+      }}
       onPointerLeave={(e) => e.pointerType === "mouse" && hoverStore.set(null)}
     >
       <PhotoFrame listing={listing} index={photoIndex} onIndexChange={setIndex} onOpen={open} priority={priority} />

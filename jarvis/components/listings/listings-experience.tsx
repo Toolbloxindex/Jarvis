@@ -3,8 +3,6 @@
 import { Dialog } from "@base-ui/react/dialog";
 import NumberFlow from "@number-flow/react";
 import {
-  BellIcon,
-  BellRingingIcon,
   HeartIcon,
   ListBulletsIcon,
   MapTrifoldIcon,
@@ -34,6 +32,7 @@ import { ListingDetail } from "./listing-detail";
 import { MobileSearch, SearchPill } from "./search";
 import { TriageHint, useTriage } from "./triage";
 import { SyncControl } from "./sync-control";
+import { AlertsControl } from "./alerts-control";
 import { FiltersTab, MapSwitch, SortMenu } from "./toolbar";
 
 const APP_ROOT_ID = "listings-app";
@@ -94,7 +93,6 @@ export function ListingsExperience({
   /** Just-saved homes stay in the feed for a beat, so the heart can pop before they fly off. */
   const [savingIds, setSavingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [savedBump, setSavedBump] = useState(0);
-  const [alerts, setAlerts] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [photoIndex, setPhotoIndex] = useState<Record<string, number>>({});
@@ -320,7 +318,7 @@ export function ListingsExperience({
           },
         },
       );
-    }, 170);
+    }, 90);
   }, [setSaved]);
 
   const passedStack = useRef<string[]>([]);
@@ -432,7 +430,7 @@ export function ListingsExperience({
         <div ref={sentinelRef} aria-hidden="true" className="absolute top-0 h-px w-px" />
 
         {/* ---------- Header + toolbar ---------- */}
-        <div className="hw-header sticky top-0 z-40 bg-white">
+        <div data-sticky-top className="hw-header sticky top-0 z-40 bg-white">
           <header className="relative z-20 flex h-[var(--header-h)] items-center gap-3 px-5 sm:px-6 xl:px-10">
             <Link href="/listings" aria-label="Housewatch, all homes" className="shrink-0 xl:min-w-[220px]">
               <Logo />
@@ -458,22 +456,7 @@ export function ListingsExperience({
             </div>
             <div className="flex shrink-0 items-center justify-end gap-1 xl:min-w-[220px]">
               <SyncControl config={sync} />
-              <button
-                type="button"
-                aria-label="Alerts for new matches"
-                aria-pressed={alerts}
-                onClick={() => {
-                  setAlerts((a) => !a);
-                  toast(alerts ? "Alerts off" : "Alerts on", {
-                    id: "alerts",
-                    description: alerts ? undefined : "New matches for this search will reach you by email.",
-                  });
-                }}
-                className="press hidden h-11 items-center gap-2 rounded-full px-3.5 text-[14px] font-semibold transition-colors hover:bg-hover sm:flex"
-              >
-                {alerts ? <BellRingingIcon size={18} weight="fill" /> : <BellIcon size={18} />}
-                <span className="hidden xl:inline">Alerts</span>
-              </button>
+              <AlertsControl enabled={!!sync} />
               <ViewBin
                 id="passed-bin"
                 label="Passed"
