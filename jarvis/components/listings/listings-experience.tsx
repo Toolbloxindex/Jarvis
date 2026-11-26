@@ -23,7 +23,8 @@ import { viewListing, type ListingView } from "@/lib/listings/match";
 import { EMPTY_FILTERS, countActiveFilters, passesFilters, sortViews, type Filters, type SortKey } from "@/lib/listings/query";
 import { median } from "@/lib/listings/scores";
 import type { Listing, SearchCriteria } from "@/lib/listings/types";
-import { ensureDeviceId, usePersisted, usePersistedSet } from "@/lib/persist";
+import { usePersisted, usePersistedSet } from "@/lib/persist";
+import type { SyncConfig } from "@/lib/sync";
 import { universityById } from "@/lib/universities";
 import { dropStyle, flyIntoStyle } from "@/lib/card-motion";
 import { decodeWithin, runTransition } from "@/lib/view-transition";
@@ -32,6 +33,7 @@ import { ListingCard } from "./listing-card";
 import { ListingDetail } from "./listing-detail";
 import { MobileSearch, SearchPill } from "./search";
 import { TriageHint, useTriage } from "./triage";
+import { SyncControl } from "./sync-control";
 import { FiltersTab, MapSwitch, SortMenu } from "./toolbar";
 
 const APP_ROOT_ID = "listings-app";
@@ -67,6 +69,8 @@ interface ListingsExperienceProps {
   updatedAt?: string | null;
   /** No real data yet: the first collection is still running. */
   collecting?: boolean;
+  /** Public Supabase settings for account-free sync between devices; null turns sync off. */
+  sync?: SyncConfig | null;
 }
 
 export function ListingsExperience({
@@ -75,6 +79,7 @@ export function ListingsExperience({
   initialSearch,
   updatedAt = null,
   collecting = false,
+  sync = null,
 }: ListingsExperienceProps) {
   // Personal state is local-first: it survives reloads and new tabs (lib/persist.ts).
   const [criteria, setCriteria] = usePersisted<SearchCriteria>("search", initialSearch);
@@ -98,10 +103,6 @@ export function ListingsExperience({
   const [mapOn, setMapOn] = usePersisted("mapOn", true);
   const [filtersDocked, setFiltersDocked] = usePersisted("filtersDocked", true);
 
-  // Anonymous device id (cookie), the anchor for account-free sync.
-  useEffect(() => {
-    ensureDeviceId();
-  }, []);
   const [filtersSheet, setFiltersSheet] = useState(false);
   const [mobileMap, setMobileMap] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -456,6 +457,7 @@ export function ListingsExperience({
               />
             </div>
             <div className="flex shrink-0 items-center justify-end gap-1 xl:min-w-[220px]">
+              <SyncControl config={sync} />
               <button
                 type="button"
                 aria-label="Alerts for new matches"
