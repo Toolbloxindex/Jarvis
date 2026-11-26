@@ -82,6 +82,7 @@ export function ListingDetail(props: ListingDetailProps) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
+  const openedAt = useRef(0);
   const actionsRef = useRef({ save: props.onToggleSave, pass: props.onPass });
 
   useEffect(() => {
@@ -91,6 +92,7 @@ export function ListingDetail(props: ListingDetailProps) {
 
   // Modal behaviour: inert background, scroll lock, Escape, focus in and back out.
   useEffect(() => {
+    openedAt.current = performance.now();
     const opener = document.activeElement as HTMLElement | null;
     const root = document.getElementById(appRootId);
     const html = document.documentElement;
@@ -136,7 +138,8 @@ export function ListingDetail(props: ListingDetailProps) {
         aria-labelledby={titleId}
         className="fixed inset-0 z-50 overflow-y-auto overscroll-contain"
         style={{ viewTransitionName: "hw-sheet" }}
-        onClick={(e) => e.target === e.currentTarget && onClose()}
+        // A fast double-click on a card must not open and immediately close the sheet.
+        onClick={(e) => e.target === e.currentTarget && e.timeStamp - openedAt.current > 300 && onClose()}
       >
         <div
           className="relative mx-auto min-h-dvh w-full bg-white md:my-6 md:min-h-0 md:w-[min(1160px,calc(100vw-48px))] md:rounded-[28px] md:shadow-[var(--shadow-sheet)]"

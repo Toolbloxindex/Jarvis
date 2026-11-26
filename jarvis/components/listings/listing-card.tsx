@@ -1,11 +1,11 @@
 "use client";
 
-import { BicycleIcon, CaretLeftIcon, CaretRightIcon, HeartIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, BicycleIcon, CaretLeftIcon, CaretRightIcon, HeartIcon } from "@phosphor-icons/react";
 import useEmblaCarousel from "embla-carousel-react";
 import Image from "next/image";
 import { memo, useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
-import { hoverStore } from "@/lib/hover-store";
+import { hoverStore, useIsCursor } from "@/lib/hover-store";
 import { formatDay, formatEUR, formatMonths, isAvailableNow } from "@/lib/listings/format";
 import { outsideReason, type ListingView } from "@/lib/listings/match";
 import type { Listing } from "@/lib/listings/types";
@@ -64,14 +64,24 @@ export function ScoreChip({ value, className }: { value: number; className?: str
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * Unsaved: a light outline heart that reads on any photo. Saved: an ink heart on a white disc,
+ * unmistakable at a glance. The switch pops once (CSS), nothing else moves.
+ */
 export function SaveHeart({ saved, size = 24 }: { saved: boolean; size?: number }) {
+  if (saved) {
+    return (
+      <span
+        className="hw-pop grid place-items-center rounded-full bg-white shadow-[0_2px_8px_rgb(0_0_0/0.22)]"
+        style={{ width: size + 8, height: size + 8 }}
+      >
+        <HeartIcon size={size * 0.72} weight="fill" className="text-ink" />
+      </span>
+    );
+  }
   return (
-    <span className={cn("relative block", saved && "hw-pop")} style={{ width: size, height: size }}>
-      <HeartIcon
-        size={size}
-        weight="fill"
-        className={cn("absolute inset-0 transition-colors duration-150", saved ? "text-ink" : "text-black/45")}
-      />
+    <span className="relative block" style={{ width: size, height: size }}>
+      <HeartIcon size={size} weight="fill" className="absolute inset-0 text-black/40" />
       <HeartIcon size={size} weight="bold" className="absolute inset-0 text-white" />
     </span>
   );
@@ -89,7 +99,11 @@ interface PhotoFrameProps {
 
 /** The photo frame is also the element that morphs into the detail hero (see lib/view-transition). */
 function PhotoFrame({ listing, index, onIndexChange, onOpen, priority }: PhotoFrameProps) {
-  const [emblaRef, embla] = useEmblaCarousel({ duration: 22, startIndex: index });
+  // The carousel only starts the first time someone reaches for this card (hover, touch, focus):
+  // 22 idle carousels at load or after a filter change are pure main-thread cost.
+  const [live, setLive] = useState(index > 0);
+  if (index > 0 && !live) setLive(true); // a photo was chosen elsewhere (detail view)
+  const [emblaRef, embla] = useEmblaCarousel({ duration: 22, startIndex: index, active: live });
   const [visited, setVisited] = useState(() => new Set([index, index + 1]));
   const photos = listing.photos;
 
@@ -124,7 +138,13 @@ function PhotoFrame({ listing, index, onIndexChange, onOpen, priority }: PhotoFr
   const dotIndex = Math.min(index, dots - 1);
 
   return (
-    <div data-photo={listing.id} className="relative aspect-[20/19] overflow-hidden rounded-2xl bg-hover">
+    <div
+      data-photo={listing.id}
+      onPointerEnter={() => setLive(true)}
+      onTouchStart={() => setLive(true)}
+      onFocusCapture={() => setLive(true)}
+      className="relative aspect-[20/19] overflow-hidden rounded-2xl bg-hover"
+    >
       <div ref={emblaRef} className="h-full cursor-pointer overflow-hidden" onClick={onOpen}>
         <div className="flex h-full touch-pan-y">
           {photos.map((photo, i) => (
@@ -200,6 +220,8 @@ export interface ListingCardProps {
   onToggleSave: (id: string) => void;
   onOpen: (id: string) => void;
   onPhotoIndex: (id: string, i: number) => void;
+  /** Passed list: show Restore instead of the heart. */
+  onRestore?: (id: string) => void;
 }
 
 export const ListingCard = memo(function ListingCard({
@@ -211,27 +233,23 @@ export const ListingCard = memo(function ListingCard({
   onToggleSave,
   onOpen,
   onPhotoIndex,
+  onRestore,
 }: ListingCardProps) {
   const { listing, travel } = view;
   const badge = badgeFor(view, now);
   const open = useCallback(() => onOpen(listing.id), [onOpen, listing.id]);
   const setIndex = useCallback((i: number) => onPhotoIndex(listing.id, i), [onPhotoIndex, listing.id]);
   const outside = view.status === "outside";
+  const isCursor = useIsCursor(listing.id);
 
   return (
     <article
+      data-cursor={isCursor || undefined}
       className="group relative"
       onPointerEnter={(e) => e.pointerType === "mouse" && hoverStore.set(listing.id)}
       onPointerLeave={(e) => e.pointerType === "mouse" && hoverStore.set(null)}
     >
       <PhotoFrame listing={listing} index={photoIndex} onIndexChange={setIndex} onOpen={open} priority={priority} />
-
-      {/* Saving: a heart blooms on the photo once, then gets out of the way. */}
-      {saved && (
-        <span aria-hidden="true" className="hw-burst pointer-events-none absolute inset-x-0 top-0 grid aspect-[20/19] place-items-center">
-          <HeartIcon size={72} weight="fill" className="text-white drop-shadow-[0_4px_16px_rgb(0_0_0/0.35)]" />
-        </span>
-      )}
 
       {badge && (
         <span
@@ -244,17 +262,28 @@ export const ListingCard = memo(function ListingCard({
         </span>
       )}
 
-      <button
-        type="button"
-        aria-pressed={saved}
-        aria-label={saved ? `Remove ${listing.title} from shortlist` : `Save ${listing.title} to shortlist`}
-        onClick={() => onToggleSave(listing.id)}
-        className="press absolute top-2 right-2 grid size-10 place-items-center rounded-full"
-      >
-        <SaveHeart saved={saved} />
-      </button>
+      {onRestore ? (
+        <button
+          type="button"
+          onClick={() => onRestore(listing.id)}
+          className="press absolute top-3 right-3 flex h-8 items-center gap-1.5 rounded-full bg-white px-3 text-[13px] font-semibold shadow-[var(--shadow-pill)]"
+        >
+          <ArrowCounterClockwiseIcon size={13} weight="bold" />
+          Restore
+        </button>
+      ) : (
+        <button
+          type="button"
+          aria-pressed={saved}
+          aria-label={saved ? `Remove ${listing.title} from saved` : `Save ${listing.title}`}
+          onClick={() => onToggleSave(listing.id)}
+          className="press absolute top-2 right-2 grid size-10 place-items-center rounded-full"
+        >
+          <SaveHeart saved={saved} />
+        </button>
+      )}
 
-      <div className="relative mt-3">
+      <div className="hw-card-text relative mt-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="min-w-0 truncate text-[15px] leading-5 font-semibold">
             <button

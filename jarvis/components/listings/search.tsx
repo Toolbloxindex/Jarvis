@@ -6,8 +6,8 @@ import NumberFlow from "@number-flow/react";
 import { CheckIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
 import { startTransition, useEffect, useId, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
-import { formatDay, formatEUR, formatMonths } from "@/lib/listings/format";
-import { checkMoveIn, checkStay, monthlyTotal } from "@/lib/listings/match";
+import { formatDay, formatEUR } from "@/lib/listings/format";
+import { monthlyTotal } from "@/lib/listings/match";
 import { priceHistogram } from "@/lib/listings/query";
 import { median } from "@/lib/listings/scores";
 import { UNIVERSITIES, universityById } from "@/lib/universities";
@@ -33,17 +33,18 @@ interface SearchProps {
   months?: 1 | 2;
 }
 
+interface PanelProps extends SearchProps {
+  /** Mobile sheet: every section visible, no tabs, no auto-advance. */
+  stacked?: boolean;
+  /** A final choice was made in this panel: move on to the next one. */
+  onAdvance?: () => void;
+}
+
 /* ------------------------------------------------------------------ */
 /* Summaries                                                            */
 /* ------------------------------------------------------------------ */
 
 const today = (now: string) => now.slice(0, 10);
-
-function addDays(iso: string, days: number) {
-  const d = new Date(`${iso.slice(0, 10)}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
 
 function addMonths(iso: string, months: number) {
   const d = new Date(`${iso.slice(0, 10)}T12:00:00Z`);
@@ -51,190 +52,126 @@ function addMonths(iso: string, months: number) {
   return d.toISOString().slice(0, 10);
 }
 
-/** Next first-of-`month` (0-based) at least two weeks out. Semester anchors for Dutch universities. */
-function nextFirstOf(month: number, now: string) {
-  const start = new Date(`${addDays(today(now), 14)}T12:00:00Z`);
-  const year = start.getUTCMonth() <= month ? start.getUTCFullYear() : start.getUTCFullYear() + 1;
-  return new Date(Date.UTC(year, month, 1, 12)).toISOString().slice(0, 10);
+interface Flex {
+  days: number;
+  /** Chip text. */
+  chip: string;
+  /** Suffix in summaries; empty for an exact date. */
+  short: string;
 }
 
-/** "As soon as possible": the coming two weeks. */
-const ASAP = { offset: 7, flex: 7 };
-export const asapDate = (now: string) => addDays(today(now), ASAP.offset);
-
-const MOVE_IN_FLEX = [
-  { days: 0, label: "Exact date", short: "" },
-  { days: 3, label: "± 3 days", short: "± 3 days" },
-  { days: 7, label: "± 1 week", short: "± 1 wk" },
-  { days: 14, label: "± 2 weeks", short: "± 2 wk" },
-  { days: 30, label: "± 1 month", short: "± 1 mo" },
+const MOVE_IN_FLEX: Flex[] = [
+  { days: 0, chip: "Exact", short: "" },
+  { days: 3, chip: "±3 d", short: "± 3 d" },
+  { days: 7, chip: "±1 wk", short: "± 1 wk" },
+  { days: 14, chip: "±2 wk", short: "± 2 wk" },
+  { days: 30, chip: "±1 mo", short: "± 1 mo" },
 ];
 
-const STAY_FLEX = [
-  { days: 0, label: "Exact", short: "" },
-  { days: 14, label: "± 2 weeks", short: "± 2 wk" },
-  { days: 30, label: "± 1 month", short: "± 1 mo" },
-  { days: 60, label: "± 2 months", short: "± 2 mo" },
+const MOVE_OUT_FLEX: Flex[] = [
+  { days: 0, chip: "Exact", short: "" },
+  { days: 7, chip: "±1 wk", short: "± 1 wk" },
+  { days: 14, chip: "±2 wk", short: "± 2 wk" },
+  { days: 30, chip: "±1 mo", short: "± 1 mo" },
+  { days: 60, chip: "±2 mo", short: "± 2 mo" },
 ];
 
-const flexShort = (table: typeof MOVE_IN_FLEX, days: number) =>
-  table.find((f) => f.days === days)?.short ?? `± ${days} days`;
+const withFlex = (date: string, table: Flex[], days: number) => {
+  const flex = table.find((f) => f.days === days)?.short ?? (days ? `± ${days} d` : "");
+  return flex ? `${date} ${flex}` : date;
+};
 
+const fullDay = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+
+/** "1 Feb ± 1 mo" or "Any date". */
 export function moveInSummary(c: SearchCriteria, now: string) {
-  if (c.moveIn === null) return "Any date";
-  if (c.moveIn === asapDate(now) && c.moveInFlexDays === ASAP.flex) return "As soon as possible";
-  const flex = flexShort(MOVE_IN_FLEX, c.moveInFlexDays);
-  return `${formatDay(c.moveIn, now)}${flex ? ` ${flex}` : ""}`;
+  return c.moveIn === null ? "Any date" : withFlex(formatDay(c.moveIn, now), MOVE_IN_FLEX, c.moveInFlexDays);
 }
 
-export function staySummary(c: SearchCriteria) {
-  if (c.stayMonths === null) return "No end date";
-  const flex = flexShort(STAY_FLEX, c.stayFlexDays);
-  return `${formatMonths(c.stayMonths)}${flex ? ` ${flex}` : ""}`;
+/** "1 Jul 2027 ± 2 wk" or "Indefinite". Move-outs can be years away, so the year is always shown. */
+export function moveOutSummary(c: SearchCriteria) {
+  if (c.moveOut === null) return "Indefinite";
+  return withFlex(fullDay.format(new Date(`${c.moveOut}T12:00:00Z`)), MOVE_OUT_FLEX, c.moveOutFlexDays);
 }
 
-/** "1 Feb ± 1 mo · no end date" or "1 Feb to ~1 Jan 2028". */
+/** "1 Feb ± 1 mo → Indefinite" or "1 Feb → 1 Jul 2027 ± 2 wk". */
 export function availabilitySummary(c: SearchCriteria, now: string) {
-  if (c.moveIn === null && c.stayMonths === null) return "Any time";
-  const start = moveInSummary(c, now);
-  if (c.stayMonths === null) return `${start} · no end`;
-  const from = c.moveIn ?? asapDate(now);
-  return `${start} → ${formatDay(addMonths(from, c.stayMonths), now)}`;
+  if (c.moveIn === null && c.moveOut === null) return "Any time";
+  return `${moveInSummary(c, now)} → ${moveOutSummary(c)}`;
 }
 
 export function budgetSummary(budget: number | null) {
   return budget === null ? "Any budget" : `Up to ${formatEUR(budget)}`;
 }
 
-const homes = (n: number) => (n === 1 ? "1 home" : `${n} homes`);
-
 /* ------------------------------------------------------------------ */
 /* Panels (shared by the desktop pill and the mobile sheet)             */
 /* ------------------------------------------------------------------ */
 
-function Chip({
-  selected,
-  onClick,
-  children,
-  hint,
-}: {
-  selected: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-  hint?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={selected}
-      className={cn(
-        "press flex flex-col items-start rounded-2xl px-4 py-3 text-left transition-colors duration-150",
-        selected
-          ? "bg-ink text-white"
-          : "bg-white shadow-[inset_0_0_0_1px_var(--color-line)] hover:shadow-[inset_0_0_0_1px_var(--color-ink)]",
-      )}
-    >
-      <span className="text-[15px] font-semibold">{children}</span>
-      {hint && (
-        <span className={cn("tabular mt-0.5 text-[13px]", selected ? "text-white/70" : "text-ink-2")}>{hint}</span>
-      )}
-    </button>
-  );
-}
+const outlined =
+  "text-ink-2 shadow-[inset_0_0_0_1px_var(--color-line)] [@media(hover:hover)]:hover:text-ink [@media(hover:hover)]:hover:shadow-[inset_0_0_0_1px_var(--color-ink)]";
 
-/** Small segmented row for tolerances: one tap, no dropdown. */
-function FlexRow({
+/** One compact row of tolerances. Same weight selected or not, so nothing reflows. */
+function Tolerance({
   label,
   value,
   options,
   onChange,
+  disabled,
 }: {
   label: string;
   value: number;
-  options: Array<{ days: number; label: string }>;
+  options: Flex[];
   onChange: (days: number) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div>
-      <p className="mb-2 text-[13px] font-semibold">{label}</p>
-      <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-1.5">
-        {options.map((o) => (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      aria-disabled={disabled || undefined}
+      className={cn("flex flex-wrap gap-1 transition-opacity duration-150 sm:gap-1.5", disabled && "opacity-40")}
+    >
+      {options.map((o) => {
+        const selected = value === o.days;
+        return (
           <button
             key={o.days}
             type="button"
             role="radio"
-            aria-checked={value === o.days}
+            aria-checked={selected}
+            disabled={disabled}
             onClick={() => onChange(o.days)}
             className={cn(
-              "press h-9 rounded-full px-3.5 text-[13px] transition-colors duration-150",
-              value === o.days
-                ? "bg-ink font-semibold text-white"
-                : "text-ink-2 shadow-[inset_0_0_0_1px_var(--color-line)] hover:text-ink hover:shadow-[inset_0_0_0_1px_var(--color-ink)]",
+              "press tabular h-8 rounded-full px-2.5 text-[13px] font-medium whitespace-nowrap sm:px-3 transition-[color,background-color,box-shadow] duration-150",
+              selected ? "bg-ink text-white" : outlined,
+              disabled && "pointer-events-none",
             )}
           >
-            {o.label}
+            {o.chip}
           </button>
-        ))}
-      </div>
+        );
+      })}
     </div>
   );
 }
 
-export function MoveInPanel({
-  criteria,
-  onChange,
-  listings,
-  now,
-  months = 2,
-  onPickDate,
-}: SearchProps & { onPickDate?: () => void }) {
+function MoveInSection({ criteria, onChange, listings, now, months = 2, onPick }: PanelProps & { onPick?: () => void }) {
   const availability = useMemo(() => {
     const map: Record<string, number> = {};
     for (const l of listings) map[l.tenancy.availableFrom] = (map[l.tenancy.availableFrom] ?? 0) + 1;
     return map;
   }, [listings]);
 
-  const asap = asapDate(now);
-  const semester2 = nextFirstOf(1, now);
-  const academicYear = nextFirstOf(8, now);
-  const presets = [
-    { label: "As soon as possible", hint: "Next two weeks", moveIn: asap, flex: ASAP.flex },
-    { label: "Semester start", hint: formatDay(semester2, now), moveIn: semester2, flex: 30 },
-    { label: "Academic year", hint: formatDay(academicYear, now), moveIn: academicYear, flex: 30 },
-  ];
-
-  const statuses = listings.map((l) => checkMoveIn(l, criteria, now).status);
-  const inWindow = statuses.filter((s) => s === "pass").length;
-  const earlier = statuses.filter((s) => s === "unknown").length;
-
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap gap-2">
-        {presets.map((p) => (
-          <Chip
-            key={p.label}
-            hint={p.hint}
-            selected={criteria.moveIn === p.moveIn && criteria.moveInFlexDays === p.flex}
-            onClick={() => onChange({ ...criteria, moveIn: p.moveIn, moveInFlexDays: p.flex })}
-          >
-            {p.label}
-          </Chip>
-        ))}
-        <Chip
-          hint="Show everything"
-          selected={criteria.moveIn === null}
-          onClick={() => onChange({ ...criteria, moveIn: null })}
-        >
-          Any date
-        </Chip>
-      </div>
-
+    <div>
       <MoveInCalendar
         value={criteria.moveIn}
         onChange={(iso) => {
-          onChange({ ...criteria, moveIn: iso });
-          onPickDate?.();
+          // A move-out before the new move-in no longer makes sense: fall back to indefinite.
+          const moveOut = criteria.moveOut !== null && criteria.moveOut <= iso ? null : criteria.moveOut;
+          onChange({ ...criteria, moveIn: iso, moveOut });
+          onPick?.();
         }}
         today={today(now)}
         availability={availability}
@@ -242,123 +179,71 @@ export function MoveInPanel({
         flexDays={criteria.moveInFlexDays}
         maxDate={addMonths(today(now), 12)}
       />
-
-      <FlexRow
-        label="How flexible is your move-in?"
-        value={criteria.moveInFlexDays}
-        options={MOVE_IN_FLEX}
-        onChange={(days) => onChange({ ...criteria, moveInFlexDays: days, moveIn: criteria.moveIn ?? asap })}
-      />
-
-      <p className="tabular text-[13px] leading-5 text-ink-2">
-        {criteria.moveIn === null
-          ? "Any move-in date. Dots mark days when homes become available."
-          : `${homes(inWindow)} free in your window${
-              earlier ? `, ${earlier} more earlier (you'd ask to start later, or pay the gap)` : ""
-            }. Dots mark days when homes become available.`}
-      </p>
-    </div>
-  );
-}
-
-/** Student-shaped presets: people know "a semester" or "my MSc" before they know a date. */
-const STAY_PRESETS: Array<{ value: number | null; label: string; hint: string }> = [
-  { value: null, label: "No end date", hint: "Open-ended" },
-  { value: 5, label: "One semester", hint: "~5 mo" },
-  { value: 11, label: "Academic year", hint: "~11 mo" },
-  { value: 24, label: "Two years", hint: "MSc" },
-  { value: 48, label: "Four years", hint: "PhD" },
-];
-
-export function StayPanel({ criteria, onChange, listings, now }: SearchProps) {
-  const from = criteria.moveIn ?? asapDate(now);
-  const months = criteria.stayMonths;
-  const fits = (value: number | null) =>
-    listings.filter((l) => checkStay(l, { stayMonths: value, stayFlexDays: criteria.stayFlexDays }).status !== "fail")
-      .length;
-  const step = (delta: number) =>
-    onChange({ ...criteria, stayMonths: Math.min(60, Math.max(1, (months ?? 6) + delta)) });
-
-  return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        {STAY_PRESETS.map((o) => (
-          <Chip
-            key={o.label}
-            selected={months === o.value}
-            onClick={() => onChange({ ...criteria, stayMonths: o.value })}
-            hint={`${o.hint} · ${homes(fits(o.value))}`}
-          >
-            {o.label}
-          </Chip>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-between gap-4 rounded-2xl bg-subtle px-4 py-3">
-        <p className="text-[14px] font-medium">Or exactly</p>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            aria-label="One month less"
-            onClick={() => step(-1)}
-            disabled={months !== null && months <= 1}
-            className="press grid size-8 place-items-center rounded-full bg-white shadow-[inset_0_0_0_1px_var(--color-line)] disabled:opacity-40"
-          >
-            −
-          </button>
-          <span className="tabular w-24 text-center text-[15px] font-semibold" aria-live="polite">
-            {months === null ? "—" : formatMonths(months)}
-          </span>
-          <button
-            type="button"
-            aria-label="One month more"
-            onClick={() => step(1)}
-            className="press grid size-8 place-items-center rounded-full bg-white shadow-[inset_0_0_0_1px_var(--color-line)]"
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      {months !== null && (
-        <FlexRow
-          label="The contract may end earlier or later by"
-          value={criteria.stayFlexDays}
-          options={STAY_FLEX}
-          onChange={(days) => onChange({ ...criteria, stayFlexDays: days })}
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+        <Tolerance
+          label="Move-in flexibility"
+          value={criteria.moveInFlexDays}
+          options={MOVE_IN_FLEX}
+          disabled={criteria.moveIn === null}
+          onChange={(days) => onChange({ ...criteria, moveInFlexDays: days })}
         />
-      )}
-
-      {months !== null && (
-        <div className="rounded-2xl px-4 py-3 shadow-[inset_0_0_0_1px_var(--color-line-soft)]" aria-label="Your stay">
-          <div className="tabular flex items-center justify-between text-[13px]">
-            <span>
-              <span className="block font-semibold">{formatDay(from, now)}</span>
-              <span className="text-ink-2">
-                Move in{criteria.moveIn && criteria.moveInFlexDays ? ` ${flexShort(MOVE_IN_FLEX, criteria.moveInFlexDays)}` : ""}
-              </span>
-            </span>
-            <span aria-hidden="true" className="mx-4 h-px flex-1 bg-ink" />
-            <span className="text-right">
-              <span className="block font-semibold">{formatDay(addMonths(from, months), now)}</span>
-              <span className="text-ink-2">
-                Move out{criteria.stayFlexDays ? ` ${flexShort(STAY_FLEX, criteria.stayFlexDays)}` : ""}
-              </span>
-            </span>
-          </div>
-        </div>
-      )}
-
-      <p className="text-[13px] leading-5 text-ink-2">
-        {months === null
-          ? "Open-ended contracts fit. Fixed-term contracts are kept but marked to confirm, since you'd have to move again."
-          : "Fixed terms that end a little early, or minimum stays a little longer, count as “to confirm” within your tolerance. Open-ended contracts always fit; you give notice when you leave."}
-      </p>
+        <button
+          type="button"
+          disabled={criteria.moveIn === null}
+          onClick={() => onChange({ ...criteria, moveIn: null })}
+          className="h-8 px-1 text-[13px] font-semibold underline underline-offset-4 disabled:text-ink-3 disabled:no-underline"
+        >
+          Any date
+        </button>
+      </div>
     </div>
   );
 }
 
-export function UniversityPanel({ criteria, onChange }: SearchProps) {
+function MoveOutSection({ criteria, onChange, now, months = 2, onPick }: PanelProps & { onPick?: () => void }) {
+  const indefinite = criteria.moveOut === null;
+  return (
+    <div>
+      <MoveInCalendar
+        value={criteria.moveOut}
+        onChange={(iso) => {
+          onChange({ ...criteria, moveOut: iso });
+          onPick?.();
+        }}
+        today={today(now)}
+        minDate={criteria.moveIn ?? today(now)}
+        maxDate={addMonths(today(now), 60)}
+        months={months}
+        flexDays={criteria.moveOutFlexDays}
+      />
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+        <Tolerance
+          label="Move-out flexibility"
+          value={criteria.moveOutFlexDays}
+          options={MOVE_OUT_FLEX}
+          disabled={indefinite}
+          onChange={(days) => onChange({ ...criteria, moveOutFlexDays: days })}
+        />
+        <button
+          type="button"
+          aria-pressed={indefinite}
+          onClick={() => {
+            if (!indefinite) onChange({ ...criteria, moveOut: null });
+            onPick?.();
+          }}
+          className={cn(
+            "press h-8 rounded-full px-3.5 text-[13px] font-medium transition-[color,background-color,box-shadow] duration-150",
+            indefinite ? "bg-ink text-white" : outlined,
+          )}
+        >
+          Indefinite
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function UniversityPanel({ criteria, onChange, onAdvance }: PanelProps) {
   const cities = [...new Set(UNIVERSITIES.map((u) => u.city))];
   return (
     <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
@@ -374,7 +259,10 @@ export function UniversityPanel({ criteria, onChange }: SearchProps) {
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  onClick={() => onChange({ ...criteria, university: u.id })}
+                  onClick={() => {
+                    if (!selected) onChange({ ...criteria, university: u.id });
+                    onAdvance?.();
+                  }}
                   className={cn(
                     "press flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors duration-150",
                     selected ? "bg-subtle" : "hover:bg-hover",
@@ -403,24 +291,30 @@ export function UniversityPanel({ criteria, onChange }: SearchProps) {
   );
 }
 
-/** Move in and move out in one place, like check-in/check-out. Picking a date moves you on. */
-export function AvailabilityPanel(props: SearchProps & { stacked?: boolean }) {
-  const { criteria, now, stacked } = props;
+/** Move in and move out, like check-in/check-out. Picking a date moves you on. */
+export function AvailabilityPanel(props: PanelProps) {
+  const { criteria, now, stacked, onAdvance } = props;
   const [tab, setTab] = useState<"in" | "out">("in");
   if (stacked) {
     return (
       <div className="space-y-8">
-        <MoveInPanel {...props} />
-        <div>
-          <h3 className="mb-4 text-[17px] font-semibold tracking-[-0.01em]">When will you move out?</h3>
-          <StayPanel {...props} />
-        </div>
+        {(["in", "out"] as const).map((key) => (
+          <section key={key} aria-label={key === "in" ? "Move in" : "Move out"}>
+            <div className="mb-3 flex items-baseline justify-between gap-3">
+              <h3 className="text-[15px] font-semibold">{key === "in" ? "Move in" : "Move out"}</h3>
+              <span className="tabular truncate text-[13px] text-ink-2">
+                {key === "in" ? moveInSummary(criteria, now) : moveOutSummary(criteria)}
+              </span>
+            </div>
+            {key === "in" ? <MoveInSection {...props} /> : <MoveOutSection {...props} />}
+          </section>
+        ))}
       </div>
     );
   }
   const tabs = [
     { key: "in" as const, label: "Move in", value: moveInSummary(criteria, now) },
-    { key: "out" as const, label: "Move out", value: staySummary(criteria) },
+    { key: "out" as const, label: "Move out", value: moveOutSummary(criteria) },
   ];
   return (
     <div>
@@ -438,27 +332,81 @@ export function AvailabilityPanel(props: SearchProps & { stacked?: boolean }) {
             )}
           >
             <span className="block text-[12px] font-semibold">{t.label}</span>
-            <span className="block truncate text-[14px] text-ink-2">{t.value}</span>
+            <span className="tabular block truncate text-[14px] text-ink-2">{t.value}</span>
           </button>
         ))}
       </div>
       <div key={tab} className="hw-swap" role="tabpanel">
         {tab === "in" ? (
-          <MoveInPanel
-            {...props}
-            onPickDate={() => setTab("out")}
-          />
+          <MoveInSection {...props} onPick={() => setTab("out")} />
         ) : (
-          <StayPanel {...props} />
+          <MoveOutSection {...props} onPick={onAdvance} />
         )}
       </div>
     </div>
   );
 }
 
-const BUDGET_PRESETS = [600, 800, 1000, 1250];
+/* ------------------------------------------------------------------ */
+/* Budget                                                               */
+/* ------------------------------------------------------------------ */
 
-export function BudgetPanel({ criteria, onChange, onChangeLive, listings }: SearchProps) {
+/**
+ * Bars are a fixed-height grey column with an ink layer on top, so "in range" is an opacity
+ * change (compositor only), rippling out from the thumb via --d. Bars top out at 90% of the
+ * box so the lift near the thumb (scale 1.08) always stays inside it.
+ */
+const BUDGET_CSS = `
+.hw-hist { contain: layout paint; }
+.hw-hbar {
+  position: relative;
+  flex: 1 1 0;
+  border-radius: 3px 3px 0 0;
+  background: var(--color-line);
+  transform-origin: 50% 100%;
+  transition: scale 260ms var(--ease-out);
+}
+.hw-hbar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-ink);
+  opacity: 0;
+  transition: opacity 200ms var(--ease-out) var(--d, 0ms);
+}
+.hw-hbar[data-in]::after { opacity: 1; }
+.hw-hbar[data-near] { scale: 1 1.08; }
+.hw-bubble {
+  transform-origin: 50% 100%;
+  opacity: 0;
+  scale: 0.7;
+  translate: 0 6px;
+  transition:
+    opacity 120ms ease,
+    scale 200ms var(--ease-out),
+    translate 200ms var(--ease-out);
+}
+.hw-bubble[data-show] {
+  opacity: 1;
+  scale: 1;
+  translate: 0 0;
+  transition:
+    opacity 120ms ease,
+    scale 420ms linear(0, 0.16 4%, 0.46 10%, 0.8 18%, 0.98 26%, 1.04 34%, 1.05 40%, 1.03 50%, 1.006 62%, 0.998 75%, 1),
+    translate 420ms linear(0, 0.16 4%, 0.46 10%, 0.8 18%, 0.98 26%, 1.04 34%, 1.05 40%, 1.03 50%, 1.006 62%, 0.998 75%, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .hw-hbar, .hw-hbar::after, .hw-bubble, .hw-bubble[data-show] { transition-duration: 0ms; transition-delay: 0ms; }
+  .hw-hbar[data-near] { scale: none; }
+}
+`;
+
+/** Stagger per bucket away from the thumb, capped so a jump settles within ~120 ms. */
+const RIPPLE_MS = 12;
+const RIPPLE_MAX = 10;
+
+export function BudgetPanel({ criteria, onChange, onChangeLive, listings }: PanelProps) {
   const labelId = useId();
   // The thumb and the label follow the pointer instantly; results catch up as a low-priority update.
   const [draft, setDraft] = useState<number | null>(null);
@@ -466,7 +414,6 @@ export function BudgetPanel({ criteria, onChange, onChangeLive, listings }: Sear
   const value = draft ?? committed;
   const anyBudget = value >= BUDGET_MAX;
   const dragging = draft !== null;
-  const pct = ((value - BUDGET_MIN) / (BUDGET_MAX - BUDGET_MIN)) * 100;
 
   const totals = useMemo(() => listings.map((l) => monthlyTotal(l.costs).total), [listings]);
   const { counts, step } = useMemo(() => priceHistogram(totals, BUDGET_MIN, BUDGET_MAX, 30), [totals]);
@@ -475,52 +422,71 @@ export function BudgetPanel({ criteria, onChange, onChangeLive, listings }: Sear
   const within = totals.filter((t) => anyBudget || t <= value).length;
   const toCriteria = (v: number) => ({ ...criteria, budget: v >= BUDGET_MAX ? null : v });
   const typicalPct = ((typical - BUDGET_MIN) / (BUDGET_MAX - BUDGET_MIN)) * 100;
+  const thumbBucket = (value - BUDGET_MIN) / step - 0.5;
 
   return (
     <div>
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <p id={labelId} className="text-[13px] text-ink-2">
+      <style href="hw-budget" precedence="medium">
+        {BUDGET_CSS}
+      </style>
+
+      {/* Fixed-height row: the value and the count never change the panel's size. */}
+      <div className="flex h-[58px] items-end justify-between gap-4">
+        <div className="min-w-0">
+          <p id={labelId} className="text-[13px] leading-5 text-ink-2">
             Monthly total, bills included
           </p>
-          <p className="tabular mt-1 text-[30px] leading-none font-semibold tracking-[-0.02em]">
+          <p
+            data-budget-value=""
+            className="tabular mt-2 h-[30px] text-[30px] leading-[30px] font-semibold tracking-[-0.02em] whitespace-nowrap"
+          >
             {anyBudget ? "Any budget" : formatEUR(value)}
           </p>
         </div>
-        <p className="tabular text-right text-[13px] text-ink-2">
-          <span className="block text-[20px] font-semibold text-ink">
+        <div data-budget-count="" className="tabular w-24 shrink-0 text-right">
+          <span className="block h-7 text-[20px] leading-7 font-semibold">
             <NumberFlow value={within} />
           </span>
-          {within === 1 ? "home fits" : "homes fit"}
-        </p>
+          <span className="block text-[13px] leading-5 text-ink-2">{within === 1 ? "home fits" : "homes fit"}</span>
+        </div>
       </div>
 
-      {/* Histogram: in-range bars are ink; bars near the thumb lift a little as you drag. */}
-      <div className="relative mt-7 h-20" aria-hidden="true">
-        <div className="absolute inset-0 flex items-end gap-[3px]">
+      {/* Histogram: a fixed 100px box (20px label row + 80px bars). Only scale/opacity move inside it. */}
+      <div data-histogram="" className="hw-hist relative mt-6 h-[100px]" aria-hidden="true">
+        {typical > BUDGET_MIN && (
+          <span
+            className="tabular absolute top-0 h-5 -translate-x-1/2 text-[11px] leading-4 whitespace-nowrap text-ink-2"
+            style={{ left: `clamp(48px, ${typicalPct}%, calc(100% - 48px))` }}
+          >
+            typical {formatEUR(typical)}
+          </span>
+        )}
+        <div className="absolute inset-x-0 bottom-0 flex h-20 items-end gap-[3px]">
           {counts.map((count, i) => {
             const centre = BUDGET_MIN + (i + 0.5) * step;
-            const inRange = anyBudget || centre <= value;
-            const near = dragging && Math.abs(centre - value) < step * 1.5;
+            const distance = Math.abs(i - thumbBucket);
             return (
               <div
                 key={i}
-                className={cn(
-                  "hw-bar flex-1 origin-bottom rounded-t-[3px]",
-                  inRange ? "bg-ink" : "bg-line",
-                  near && "scale-y-[1.12]",
-                )}
-                style={{ height: count === 0 ? 3 : `${Math.max(12, (count / peak) * 100)}%` }}
+                data-bar=""
+                data-in={anyBudget || centre <= value ? "" : undefined}
+                data-near={dragging && distance < 1.5 ? "" : undefined}
+                className="hw-hbar"
+                style={
+                  {
+                    height: count === 0 ? 3 : `${Math.max(12, (count / peak) * 90)}%`,
+                    "--d": `${Math.round(Math.min(distance, RIPPLE_MAX) * RIPPLE_MS)}ms`,
+                  } as React.CSSProperties
+                }
               />
             );
           })}
         </div>
         {typical > BUDGET_MIN && (
-          <div className="absolute inset-y-0 border-l border-dashed border-ink-3" style={{ left: `${typicalPct}%` }}>
-            <span className="tabular absolute -top-5 -translate-x-1/2 text-[11px] whitespace-nowrap text-ink-2">
-              typical {formatEUR(typical)}
-            </span>
-          </div>
+          <div
+            className="absolute bottom-0 h-20 border-l border-dashed border-ink-3"
+            style={{ left: `${typicalPct}%` }}
+          />
         )}
       </div>
 
@@ -559,14 +525,11 @@ export function BudgetPanel({ criteria, onChange, onChangeLive, listings }: Sear
                 <span className="h-2.5 w-px bg-ink-3" />
                 <span className="h-2.5 w-px bg-ink-3" />
               </span>
-              {/* Value bubble rides on the thumb while dragging. */}
+              {/* Value bubble rides on the thumb while dragging and springs in. */}
               <span
                 aria-hidden="true"
-                className={cn(
-                  "tabular pointer-events-none absolute bottom-full mb-2.5 rounded-lg bg-ink px-2 py-1 text-[12px] font-semibold whitespace-nowrap text-white",
-                  "origin-bottom transition-[opacity,scale] duration-150 ease-[var(--ease-out)]",
-                  dragging ? "scale-100 opacity-100" : "scale-90 opacity-0",
-                )}
+                data-show={dragging ? "" : undefined}
+                className="hw-bubble tabular pointer-events-none absolute bottom-full mb-2.5 min-w-[52px] rounded-lg bg-ink px-2 py-1 text-center text-[12px] font-semibold whitespace-nowrap text-white"
               >
                 {anyBudget ? "Any" : formatEUR(value)}
               </span>
@@ -574,47 +537,15 @@ export function BudgetPanel({ criteria, onChange, onChangeLive, listings }: Sear
           </Slider.Track>
         </Slider.Control>
       </Slider.Root>
-      <div className="tabular mt-0.5 flex justify-between text-[12px] text-ink-2" style={{ "--pct": pct } as React.CSSProperties}>
+      <div className="tabular mt-0.5 flex justify-between text-[12px] text-ink-2">
         <span>{formatEUR(BUDGET_MIN)}</span>
         <span>{formatEUR(BUDGET_MAX)}+</span>
-      </div>
-
-      <div className="mt-5 flex flex-wrap gap-1.5">
-        {BUDGET_PRESETS.map((b) => (
-          <button
-            key={b}
-            type="button"
-            aria-pressed={criteria.budget === b}
-            onClick={() => onChange({ ...criteria, budget: b })}
-            className={cn(
-              "press tabular h-8 rounded-full px-3 text-[13px] transition-colors duration-150",
-              criteria.budget === b
-                ? "bg-ink font-semibold text-white"
-                : "text-ink-2 shadow-[inset_0_0_0_1px_var(--color-line)] hover:text-ink hover:shadow-[inset_0_0_0_1px_var(--color-ink)]",
-            )}
-          >
-            {formatEUR(b)}
-          </button>
-        ))}
-        <button
-          type="button"
-          aria-pressed={criteria.budget === null}
-          onClick={() => onChange({ ...criteria, budget: null })}
-          className={cn(
-            "press h-8 rounded-full px-3 text-[13px] transition-colors duration-150",
-            criteria.budget === null
-              ? "bg-ink font-semibold text-white"
-              : "text-ink-2 shadow-[inset_0_0_0_1px_var(--color-line)] hover:text-ink hover:shadow-[inset_0_0_0_1px_var(--color-ink)]",
-          )}
-        >
-          Any
-        </button>
       </div>
     </div>
   );
 }
 
-const PANELS: Record<Segment, (p: SearchProps & { stacked?: boolean }) => React.ReactNode> = {
+const PANELS: Record<Segment, (p: PanelProps) => React.ReactNode> = {
   university: UniversityPanel,
   availability: AvailabilityPanel,
   budget: BudgetPanel,
@@ -653,11 +584,24 @@ export function SearchPill(props: SearchProps) {
   const panelId = useId();
   const { ref: contentRef, height } = useContentHeight();
   const index = active ? SEGMENTS.indexOf(active) : 0;
+  // When the panel last opened: the press that opened it must never also close it.
+  const openedAt = useRef(0);
+
+  const open = (seg: Segment, at: number) => {
+    setEverOpened(true);
+    if (active === null) openedAt.current = at;
+    // The active segment stays open on a repeat press (double-clicks used to open then close it).
+    setActive(seg);
+  };
+  const advance = () => setActive((a) => (a ? SEGMENTS[Math.min(SEGMENTS.indexOf(a) + 1, SEGMENTS.length - 1)] : a));
 
   useEffect(() => {
     if (!active) return;
     const onPointer = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setActive(null);
+      if (e.timeStamp - openedAt.current < 250) return;
+      // The dim layer lives inside the root but counts as outside.
+      const target = e.target as HTMLElement;
+      if (!rootRef.current?.contains(target) || target.hasAttribute("data-search-dim")) setActive(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setActive(null);
@@ -705,10 +649,7 @@ export function SearchPill(props: SearchProps) {
               type="button"
               aria-expanded={isActive}
               aria-controls={panelId}
-              onClick={() => {
-                setEverOpened(true);
-                setActive((a) => (a === seg.key ? null : seg.key));
-              }}
+              onClick={(e) => open(seg.key, e.timeStamp)}
               className={cn(
                 "relative h-full w-[var(--seg-w)] shrink-0 rounded-full pr-4 pl-6 text-left outline-offset-[-2px] transition-colors duration-150",
                 !isActive && (active ? "hover:bg-line/60" : "hover:bg-hover"),
@@ -724,7 +665,9 @@ export function SearchPill(props: SearchProps) {
                 />
               )}
               <span className="relative block text-[12px] leading-4 font-semibold">{seg.label}</span>
-              <span className="relative block truncate text-[14px] leading-5 text-ink-2">{seg.value}</span>
+              <span className="relative block truncate text-[14px] leading-5 text-ink-2" title={seg.value}>
+                {seg.value}
+              </span>
             </button>
           );
         })}
@@ -782,7 +725,7 @@ export function SearchPill(props: SearchProps) {
                 <h2 className="mb-5 text-[17px] font-semibold tracking-[-0.01em]">
                   {PANEL_TITLES[active ?? "university"]}
                 </h2>
-                <Panel {...props} />
+                <Panel {...props} onAdvance={advance} />
               </div>
             )}
           </div>
@@ -792,6 +735,7 @@ export function SearchPill(props: SearchProps) {
       {/* Dim the page while searching, so the panel is the only thing asking for attention. */}
       <div
         aria-hidden="true"
+        data-search-dim=""
         className={cn(
           "fixed inset-x-0 top-[var(--header-h)] bottom-0 -z-10 bg-black/20 transition-opacity duration-200",
           active ? "opacity-100" : "pointer-events-none opacity-0",
@@ -808,9 +752,22 @@ export function SearchPill(props: SearchProps) {
 export function MobileSearch(props: SearchProps & { resultCount: number }) {
   const { criteria, now, resultCount } = props;
   const [open, setOpen] = useState(false);
+  const openedAt = useRef(0);
 
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(next, details) => {
+        // The tap that opened the sheet can land as an outside press on the fresh popup: ignore it.
+        const at = details.event.timeStamp;
+        if (!next && details.reason === "outside-press" && at - openedAt.current < 300) {
+          details.cancel();
+          return;
+        }
+        if (next) openedAt.current = at;
+        setOpen(next);
+      }}
+    >
       <Dialog.Trigger
         className="press flex h-12 w-full items-center gap-3 rounded-full bg-white pr-4 pl-4 text-left shadow-[var(--shadow-pill)]"
         aria-label="Edit search"
@@ -861,9 +818,9 @@ export function MobileSearch(props: SearchProps & { resultCount: number }) {
                 props.onChange({
                   university: criteria.university,
                   moveIn: null,
-                  moveInFlexDays: 7,
-                  stayMonths: null,
-                  stayFlexDays: 30,
+                  moveInFlexDays: 30,
+                  moveOut: null,
+                  moveOutFlexDays: 14,
                   budget: null,
                 })
               }

@@ -1,39 +1,40 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { XIcon } from "@phosphor-icons/react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { cn } from "@/lib/cn";
-import { hoverStore } from "@/lib/hover-store";
+import { cursorStore, hoverStore } from "@/lib/hover-store";
 
 /**
- * Keyboard triage for people going through many homes quickly. It stays invisible until an
- * arrow key is pressed, then the focused card is the cursor:
- *   ← → ↑ ↓ move · S save · D pass · E / Enter open · Z undo last pass · ? help · Esc leave
+ * Keyboard triage for going through many homes quickly. Invisible until an arrow key is
+ * pressed. The cursor is explicit state (not DOM focus), so it is always visible and survives
+ * clicks on filters, the map or a slider:
+ *   ← → ↑ ↓ move · S save · D pass · E open/close · Z undo last pass · ? help · Esc leave
  */
 
-const CARD = "[data-card-id]";
+const CARD = "[data-card-id]:not([hidden])";
+const cards = () => [...document.querySelectorAll<HTMLElement>(CARD)];
+const byId = (id: string | null) =>
+  id ? document.querySelector<HTMLElement>(`${CARD}[data-card-id="${CSS.escape(id)}"]`) : null;
 
-function cards() {
-  return [...document.querySelectorAll<HTMLElement>(CARD)];
-}
-
-function focusCard(id: string | null | undefined) {
+function show(id: string | null | undefined) {
   if (!id) return;
-  const el = document.querySelector<HTMLElement>(`${CARD}[data-card-id="${CSS.escape(id)}"]`);
-  const target = el?.querySelector<HTMLElement>("h3 button");
-  if (!el || !target) return;
-  target.focus({ preventScroll: true });
-  el.scrollIntoView({ block: "nearest", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  const el = byId(id);
+  if (!el) return;
+  cursorStore.set(id);
   hoverStore.set(id);
-}
-
-function currentId() {
-  return (document.activeElement?.closest(CARD) as HTMLElement | null)?.dataset.cardId ?? null;
+  el.scrollIntoView({
+    block: "nearest",
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+  });
+  // Keep assistive tech in sync without letting focus rings fight the cursor.
+  el.querySelector<HTMLElement>("h3 button")?.focus({ preventScroll: true });
 }
 
 /**
- * Spatial navigation from real geometry, so it works across both result grids, any column
- * count, and after the grid reflows. Left/Right follow reading order; Up/Down pick the
- * nearest card in the next row, preferring the same column.
+ * Spatial navigation from real geometry: works across both result grids, any column count,
+ * and after reflows. Left/Right follow reading order; Up/Down pick the nearest card in the
+ * next row, preferring the same column.
  */
 function neighbour(list: HTMLElement[], from: HTMLElement, key: string) {
   const i = list.indexOf(from);
@@ -49,8 +50,8 @@ function neighbour(list: HTMLElement[], from: HTMLElement, key: string) {
     if (el === from) continue;
     const b = el.getBoundingClientRect();
     const gap = down ? b.top - r.bottom : r.top - b.bottom;
-    if (gap < -r.height / 2) continue; // not in the next row in that direction
-    const row = Math.round(Math.max(0, gap) / 8); // same visual row ≈ same bucket
+    if (gap < -r.height / 2) continue;
+    const row = Math.round(Math.max(0, gap) / 8);
     const dx = Math.abs(b.left + b.width / 2 - cx);
     if (row < bestRow || (row === bestRow && dx < bestDx)) {
       best = el;
@@ -61,41 +62,58 @@ function neighbour(list: HTMLElement[], from: HTMLElement, key: string) {
   return best ?? from;
 }
 
-function isTyping(target: EventTarget | null) {
+/** Text entry always wins. Widgets that own arrows win too, unless the pointer is on a tile. */
+function blocked(target: EventTarget | null, pointerOnTile: boolean) {
   const el = target as HTMLElement | null;
-  if (!el) return false;
+  if (!el || !el.closest) return false;
   if (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
-  // Widgets that own the arrow keys themselves.
-  return !!el.closest(
-    "[role=dialog]:not([data-triage-ok]), .maplibregl-map, [role=slider], [role=radiogroup], [role=menu], [role=grid], [role=switch]",
-  );
+  if (el.closest("[role=dialog]:not([data-triage-ok]), [role=menu], [role=listbox]")) return true;
+  if (pointerOnTile) return false;
+  return !!el.closest(".maplibregl-map, [role=slider], [role=radiogroup], [role=grid], [role=switch], [role=tablist]");
 }
 
 interface TriageOptions {
   enabled: boolean;
   onSave: (id: string) => void;
-  /** Pass on a home; resolves the id to focus next. */
   onPass: (id: string) => void;
   onOpen: (id: string) => void;
   onUndo: () => void;
 }
 
 export function useTriage({ enabled, onSave, onPass, onOpen, onUndo }: TriageOptions) {
-  const [active, setActive] = useState(false);
   const [help, setHelp] = useState(false);
+  const active = useSyncExternalStore(
+    cursorStore.subscribe,
+    () => cursorStore.get() !== null,
+    () => false,
+  );
   const handlers = useRef({ onSave, onPass, onOpen, onUndo });
   useEffect(() => {
     handlers.current = { onSave, onPass, onOpen, onUndo };
   }, [onSave, onPass, onOpen, onUndo]);
 
+  // While triaging, moving the mouse onto a tile hands the cursor to it.
+  useEffect(
+    () =>
+      hoverStore.subscribe(() => {
+        const h = hoverStore.get();
+        if (h && cursorStore.get() !== null) cursorStore.set(h);
+      }),
+    [],
+  );
+
   useEffect(() => {
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented || isTyping(e.target)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      const hovered = hoverStore.get();
+      const pointerOnTile = !!hovered && !!byId(hovered);
+      if (blocked(e.target, pointerOnTile)) return;
       const list = cards();
       if (!list.length) return;
-      const id = currentId();
       const key = e.key;
+      let id = cursorStore.get();
+      if (id && !byId(id)) id = null; // the card left the grid
 
       if (key === "?") {
         e.preventDefault();
@@ -104,9 +122,8 @@ export function useTriage({ enabled, onSave, onPass, onOpen, onUndo }: TriageOpt
       }
       if (key === "Escape") {
         if (help) setHelp(false);
-        else if (active) {
-          setActive(false);
-          hoverStore.set(null);
+        else if (id) {
+          cursorStore.set(null);
           (document.activeElement as HTMLElement | null)?.blur();
         }
         return;
@@ -114,56 +131,51 @@ export function useTriage({ enabled, onSave, onPass, onOpen, onUndo }: TriageOpt
 
       if (key.startsWith("Arrow")) {
         e.preventDefault();
-        setActive(true);
         if (!id) {
-          // Start where the person is looking: the hovered card, else the first visible one.
-          const hovered = hoverStore.get();
+          // First press selects where the person is looking: the hovered tile, else the first visible one.
           const start =
-            list.find((c) => c.dataset.cardId === hovered) ??
+            (pointerOnTile ? byId(hovered) : null) ??
             list.find((c) => c.getBoundingClientRect().bottom > 160) ??
             list[0];
-          return focusCard(start.dataset.cardId);
+          return show(start.dataset.cardId);
         }
-        const from = list.find((c) => c.dataset.cardId === id);
-        if (!from) return focusCard(list[0].dataset.cardId);
-        return focusCard(neighbour(list, from, key).dataset.cardId);
+        return show(neighbour(list, byId(id)!, key).dataset.cardId);
       }
 
-      if (!id) return;
       const k = key.toLowerCase();
-      if (k === "s") {
-        e.preventDefault();
-        setActive(true);
-        handlers.current.onSave(id);
-      } else if (k === "d") {
-        e.preventDefault();
-        setActive(true);
-        const i = list.findIndex((c) => c.dataset.cardId === id);
-        const next = list[i + 1] ?? list[i - 1];
-        handlers.current.onPass(id);
-        // The neighbour already exists; focusing it now keeps the cursor where the eye is.
-        focusCard(next?.dataset.cardId);
-      } else if (k === "e" || key === "Enter") {
-        e.preventDefault();
-        handlers.current.onOpen(id);
-      } else if (k === "z") {
+      if (k === "z") {
         e.preventDefault();
         handlers.current.onUndo();
+        return;
+      }
+      const target = id ?? (pointerOnTile ? hovered : null);
+      if (!target) return;
+      if (k === "s" || k === "d") {
+        e.preventDefault();
+        const i = list.findIndex((c) => c.dataset.cardId === target);
+        const next = list[i + 1] ?? list[i - 1];
+        if (k === "s") handlers.current.onSave(target);
+        else handlers.current.onPass(target);
+        // Both actions take the card out of the feed: keep the cursor where the eye is.
+        if (next) show(next.dataset.cardId);
+      } else if (k === "e" || key === "Enter") {
+        e.preventDefault();
+        handlers.current.onOpen(target);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [enabled, active, help]);
+  }, [enabled, help]);
 
   return { active, help, setHelp };
 }
 
 const KEYS: Array<[string[], string]> = [
-  [["←", "→", "↑", "↓"], "Move between homes"],
-  [["S"], "Save to shortlist"],
+  [["←", "→", "↑", "↓"], "Move"],
+  [["S"], "Save"],
   [["D"], "Not for me"],
   [["E"], "Open"],
-  [["Z"], "Undo last pass"],
+  [["Z"], "Undo pass"],
   [["Esc"], "Stop"],
 ];
 
@@ -175,18 +187,30 @@ function Key({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** A quiet hint bar while triaging, and a small sheet on `?`. */
+const DISMISS_KEY = "hw-triage-hint-dismissed";
+const subscribeNoop = () => () => {};
+
+/** A quiet, dismissible hint bar while triaging, and a small sheet on `?`. */
 export function TriageHint({ active, help, onClose }: { active: boolean; help: boolean; onClose: () => void }) {
+  const stored = useSyncExternalStore(
+    subscribeNoop,
+    () => localStorage.getItem(DISMISS_KEY) === "1",
+    () => true,
+  );
+  const [override, setOverride] = useState<boolean | null>(null);
+  const dismissed = override ?? stored;
+  const visible = active && !help && !dismissed;
+
   return (
     <>
       <div
-        aria-hidden={!active}
+        aria-hidden={!visible}
         className={cn(
-          "pointer-events-none fixed inset-x-0 bottom-6 z-40 hidden justify-center transition-[opacity,translate] duration-200 ease-[var(--ease-out)] lg:flex",
-          active && !help ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0",
+          "hw-hint fixed inset-x-0 bottom-6 z-40 hidden justify-center transition-[opacity,translate] duration-200 ease-[var(--ease-out)] lg:flex",
+          visible ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0",
         )}
       >
-        <div className="flex items-center gap-4 rounded-full bg-ink px-4 py-2.5 text-[13px] text-white shadow-[var(--shadow-sheet)]">
+        <div className="flex items-center gap-4 rounded-full bg-ink py-2 pr-2 pl-4 text-[13px] text-white shadow-[var(--shadow-sheet)]">
           {KEYS.slice(0, 5).map(([keys, label]) => (
             <span key={label} className="flex items-center gap-1.5">
               {keys.map((k) => (
@@ -195,7 +219,18 @@ export function TriageHint({ active, help, onClose }: { active: boolean; help: b
               <span className="text-white/75">{label}</span>
             </span>
           ))}
-          <span className="text-white/50">? for help</span>
+          <button
+            type="button"
+            aria-label="Hide keyboard hints (press ? to see them again)"
+            tabIndex={visible ? 0 : -1}
+            onClick={() => {
+              setOverride(true);
+              localStorage.setItem(DISMISS_KEY, "1");
+            }}
+            className="press grid size-7 place-items-center rounded-full text-white/70 transition-colors hover:bg-white/15 hover:text-white"
+          >
+            <XIcon size={13} weight="bold" />
+          </button>
         </div>
       </div>
 
@@ -204,12 +239,17 @@ export function TriageHint({ active, help, onClose }: { active: boolean; help: b
           role="dialog"
           data-triage-ok
           aria-label="Keyboard shortcuts"
-          className="hw-swap fixed bottom-6 left-1/2 z-50 w-[min(360px,calc(100vw-32px))] -translate-x-1/2 rounded-2xl bg-ink p-5 text-white shadow-[var(--shadow-sheet)]"
+          className="hw-hint-help hw-swap fixed bottom-6 left-1/2 z-50 w-[min(340px,calc(100vw-32px))] -translate-x-1/2 rounded-2xl bg-ink p-5 text-white shadow-[var(--shadow-sheet)]"
         >
-          <div className="mb-3 flex items-baseline justify-between">
-            <p className="text-[15px] font-semibold">Quick triage</p>
-            <button type="button" onClick={onClose} className="text-[13px] text-white/70 underline underline-offset-4">
-              Close
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-[15px] font-semibold">Keyboard</p>
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={onClose}
+              className="press grid size-7 place-items-center rounded-full text-white/70 hover:bg-white/15 hover:text-white"
+            >
+              <XIcon size={13} weight="bold" />
             </button>
           </div>
           <ul className="space-y-2.5">
@@ -224,9 +264,19 @@ export function TriageHint({ active, help, onClose }: { active: boolean; help: b
               </li>
             ))}
           </ul>
-          <p className="mt-4 text-[12px] leading-4 text-white/60">
-            Press an arrow key on the results to start. Saved and passed homes stay private to you.
-          </p>
+          {dismissed && (
+            <button
+              type="button"
+              onClick={() => {
+                localStorage.removeItem(DISMISS_KEY);
+                setOverride(false);
+                onClose();
+              }}
+              className="mt-4 text-[12px] text-white/60 underline underline-offset-4"
+            >
+              Show the hint bar again
+            </button>
+          )}
         </div>
       )}
     </>

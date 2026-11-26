@@ -4,7 +4,7 @@ try {
   if (storeKind() !== 'supabase') throw new Error('Pruning requires the Supabase store.');
   const store = await openStore();
   try {
-    console.log(JSON.stringify({ historyRowsRemoved: await store.pruneHistory() }));
+    console.log(JSON.stringify({ historyRowsRemoved: await store.pruneHistory(), aiCacheRowsRemoved: await store.pruneAiCache() }));
   } finally {
     await store.close();
   }

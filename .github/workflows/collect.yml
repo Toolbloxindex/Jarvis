@@ -37,6 +37,14 @@ jobs:
           HOUSEWATCH_REVALIDATE_URL: ${{ secrets.HOUSEWATCH_REVALIDATE_URL }}
           HOUSEWATCH_REVALIDATE_TOKEN: ${{ secrets.HOUSEWATCH_REVALIDATE_TOKEN }}
           HOUSEWATCH_TRAVEL_BUDGET: ${{ vars.HOUSEWATCH_TRAVEL_BUDGET || '10' }}
+          # AI extraction (docs/AI-EXTRACTION.md). Off until a key is set; shadow mode until approved.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HOUSEWATCH_AI_PROVIDERS: ${{ vars.HOUSEWATCH_AI_PROVIDERS || 'gemini,groq,openrouter' }}
+          HOUSEWATCH_AI_BUDGET: ${{ vars.HOUSEWATCH_AI_BUDGET || '20' }}
+          HOUSEWATCH_AI_DAILY_BUDGET: ${{ vars.HOUSEWATCH_AI_DAILY_BUDGET || '300' }}
+          HOUSEWATCH_AI_APPLY: ${{ vars.HOUSEWATCH_AI_APPLY || '0' }}
 
   prune:
     if: github.event.schedule == '0 3 * * *'

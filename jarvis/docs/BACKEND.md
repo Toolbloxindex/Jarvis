@@ -16,6 +16,7 @@ SQLite is the default for development. The app uses the existing mock listings w
 | `HOUSEWATCH_TRAVEL_BUDGET` | Collector. Defaults to 10 listings per run. Set to 0 to defer all automated travel. |
 | `HOUSEWATCH_MOTIS_URL` | Optional local loopback timetable planner. Transit needs a valid cached sample. |
 | `HOUSEWATCH_AMENITIES_FILE` | Optional local amenities catalogue JSON for travel and the SQLite feed. |
+| `GEMINI_API_KEY`, `GROQ_API_KEY` | Collector. Optional. Turn on AI-assisted extraction for free-text ads. Budgets, other providers, and privacy rules are in [AI extraction](AI-EXTRACTION.md). |
 
 ## Local commands
 

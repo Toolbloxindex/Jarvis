@@ -226,11 +226,12 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
   const origin=listingTravelKey(after);
   const moved=origin!==listingTravelKey(before);
   if(origin&&(isNew||moved)) result.travelIds.push(after.id);
+  if((isNew||isChanged)&&after?.id) result.aiIds.push(after.id);
   if(isNew) result.added++;
   else if(isChanged||moved||before?.availability!==after.availability||before?.source_detail_pending!==after.source_detail_pending||
     !isDeepStrictEqual(before?.photos??[],after.photos??[])) result.changed++;
  };
- const result={enabled:await store.getConfig('discovery.enabled',true),checked:0,added:0,changed:0,sources:[],travelIds:[]};if(!result.enabled)return result;
+ const result={enabled:await store.getConfig('discovery.enabled',true),checked:0,added:0,changed:0,sources:[],travelIds:[],aiIds:[]};if(!result.enabled)return result;
  for(const source of sources){const key='discovery.health.'+source.id;const previous=await store.getConfig(key,{});
   if(!(await store.getConfig('discovery.enabled.'+source.id,true))){result.sources.push({id:source.id,status:'disabled'});continue;}
   if(source.kind==='account'){const health=await store.getConfig(key,{status:'not_checked',accountRequired:true,message:'Read-only Facebook group collection has not yet been tested. An account session alone does not establish coverage.'});result.sources.push({id:source.id,...health});continue;}

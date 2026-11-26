@@ -119,7 +119,7 @@ p {
 @keyframes hw-rise {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(8px);
   }
 }
 @keyframes hw-fade {
@@ -127,13 +127,23 @@ p {
     opacity: 0;
   }
 }
-.hw-rise {
+/*
+ * Only the photo (and what sits on it) rises; the text fades in place. Text on a moving layer
+ * is re-rasterised when the transform ends, which read as a "chop" in the last frames.
+ */
+.hw-rise article > :not(.hw-card-text) {
   animation: hw-rise 460ms var(--ease-out) both;
+  animation-delay: var(--rise-delay, 0s);
+}
+.hw-rise .hw-card-text {
+  animation: hw-fade 420ms ease-out both;
+  animation-delay: calc(var(--rise-delay, 0s) + 70ms);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hw-rise {
-    animation-name: hw-fade;
+  .hw-rise article > *,
+  .hw-rise .hw-card-text {
+    animation-name: hw-fade !important;
     animation-delay: 0s !important;
   }
 }
@@ -201,21 +211,47 @@ p {
   animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-/* Results: every card, the map and the filters panel move as compositor layers. */
-html[data-vt="results"] .hw-header {
+/*
+ * Results: visible cards move as compositor layers. "layout" (map / filters toggles) also moves
+ * the map and the filters panel; plain result changes don't pay for snapshotting the map.
+ */
+html[data-vt="results"] .hw-header,
+html[data-vt="layout"] .hw-header {
   view-transition-name: hw-header;
 }
-html[data-vt="results"] .hw-card {
+html[data-vt="results"] .hw-card.vt-on,
+html[data-vt="layout"] .hw-card.vt-on {
   view-transition-name: var(--vt-name);
 }
-html[data-vt="results"] .hw-map-panel {
+html[data-vt="layout"] .hw-map-panel {
   view-transition-name: hw-map;
 }
-html[data-vt="results"] .hw-filters-panel {
+html[data-vt="layout"] .hw-filters-panel {
   view-transition-name: hw-filters;
 }
-html[data-vt="results"] .hw-results-head {
+html[data-vt="results"] .hw-results-head,
+html[data-vt="layout"] .hw-results-head {
   view-transition-name: hw-results-head;
+}
+
+/* Floating UI lives outside the cards; during a transition it must stay on top of them. */
+html[data-vt] [data-sonner-toaster] {
+  view-transition-name: hw-toasts;
+}
+html[data-vt] .hw-float-menu {
+  view-transition-name: hw-menu;
+}
+html[data-vt] .hw-hint {
+  view-transition-name: hw-hint;
+}
+html[data-vt] .hw-mobile-map-toggle {
+  view-transition-name: hw-map-toggle;
+}
+html::view-transition-group(hw-toasts),
+html::view-transition-group(hw-menu),
+html::view-transition-group(hw-hint),
+html::view-transition-group(hw-map-toggle) {
+  z-index: 60;
 }
 @keyframes hw-vt-enter {
   from {
@@ -239,18 +275,22 @@ html[data-vt="results"] .hw-results-head {
  * A card (or the header) that moves keeps one image: no double exposure while it travels.
  * (`:not(:only-child)` is invalid after a view-transition pseudo, so: base rule + override.)
  */
-html[data-vt="results"]::view-transition-old(*) {
+html[data-vt="results"]::view-transition-old(*),
+html[data-vt="layout"]::view-transition-old(*) {
   animation: none;
   opacity: 0;
 }
-html[data-vt="results"]::view-transition-new(*) {
+html[data-vt="results"]::view-transition-new(*),
+html[data-vt="layout"]::view-transition-new(*) {
   animation: none;
 }
-html[data-vt="results"]::view-transition-old(*):only-child {
+html[data-vt="results"]::view-transition-old(*):only-child,
+html[data-vt="layout"]::view-transition-old(*):only-child {
   opacity: 1;
   animation: hw-vt-exit 150ms ease-out both;
 }
-html[data-vt="results"]::view-transition-new(*):only-child {
+html[data-vt="results"]::view-transition-new(*):only-child,
+html[data-vt="layout"]::view-transition-new(*):only-child {
   animation: hw-vt-enter 260ms cubic-bezier(0.23, 1, 0.32, 1) both;
 }
 html::view-transition-group(hw-results-head) {
@@ -406,19 +446,19 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Keyboard cursor on a card: the photo "locks on" (outline closes in), the title underlines. */
+/* Keyboard cursor on a card: the photo "locks on" (the outline closes in), the title underlines. */
 .hw-card [data-photo] {
-  outline: 2px solid transparent;
+  outline: 2.5px solid transparent;
   outline-offset: 12px;
   transition:
-    outline-offset 200ms var(--ease-out),
+    outline-offset 220ms var(--ease-out),
     outline-color 120ms ease;
 }
-.hw-card:has(h3 button:focus-visible) [data-photo] {
+.hw-card article[data-cursor] [data-photo] {
   outline-color: var(--color-ink);
-  outline-offset: 3px;
+  outline-offset: 4px;
 }
-.hw-card:has(h3 button:focus-visible) h3 button {
+.hw-card article[data-cursor] h3 button {
   text-decoration: underline;
   text-decoration-thickness: 1.5px;
   text-underline-offset: 3px;
@@ -443,4 +483,21 @@ button:disabled {
   transition:
     background-color 120ms ease,
     scale 180ms var(--ease-out);
+}
+
+/* Passing a home: it sinks a little and fades, in place. */
+@keyframes hw-drop {
+  to {
+    opacity: 0;
+    transform: translateY(14px) scale(0.92);
+  }
+}
+
+/* Offscreen cards skip style/layout/paint until they scroll near; reflows only pay for what's visible. */
+.hw-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 396px;
+  /* Paint containment clips at the box edge: give the keyboard outline room without moving layout. */
+  padding: 8px;
+  margin: -8px;
 }

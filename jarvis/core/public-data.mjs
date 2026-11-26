@@ -1,3 +1,5 @@
+import { applyEvidenceBackedFacts } from './matcher.mjs';
+
 const publicFields = [
   'id', 'source', 'url', 'city', 'title', 'body', 'address', 'postcode', 'neighbourhood',
   'location', 'listing_kind', 'created_at', 'updated_at', 'last_seen_at', 'wanted_ad', 'sale_ad',
@@ -21,8 +23,23 @@ function publicText(value) {
     .replace(/(?:\+\d{1,3}[\s.-]*)?(?:\(0\)[\s.-]*)?\b(?:06|6)[\s.-]*(?:\d[\s.-]*){8}\b/g, '[contact removed]');
 }
 
+// AI-filled facts are applied here because the public views carry no
+// fingerprint to check them against at read time. `ai_facts` keeps provenance.
+function aiFacts(listing, merged) {
+  const extraction = listing.ai?.extraction;
+  if (merged === listing || !extraction) return null;
+  const fields = Object.keys(extraction.fields ?? {}).filter((key) => publicFields.includes(key) && merged[key] !== listing[key]);
+  return {
+    source: 'ai', provider: extraction.provider ?? null, model: extraction.model ?? null, at: extraction.at ?? null, fields,
+    conflicts: (extraction.conflicts ?? []).map((flag) => ({ ...select(flag, ['id', 'field', 'kind']), message: publicText(flag.message) })),
+  };
+}
+
 export function publicListingData(listing) {
-  const projected = select(listing, publicFields);
+  const merged = applyEvidenceBackedFacts(listing);
+  const projected = select(merged, publicFields);
+  const ai = aiFacts(listing, merged);
+  if (ai) projected.ai_facts = ai;
   for (const key of ['title', 'body', 'address']) if (key in projected) projected[key] = publicText(projected[key]);
   for (const key of ['restrictions', 'features', 'extraction_warnings']) {
     if (Array.isArray(projected[key])) projected[key] = projected[key].map(publicText);

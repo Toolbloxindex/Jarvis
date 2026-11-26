@@ -183,12 +183,12 @@ export interface SearchCriteria {
   university: string;
   /** Target move-in date (ISO). null = any date. */
   moveIn: string | null;
-  /** ± days around `moveIn` that still work. */
+  /** ± days around moveIn that still work. */
   moveInFlexDays: number;
-  /** Planned stay in months. null = no end date (open-ended). */
-  stayMonths: number | null;
-  /** How far the contract may end before (fixed term) or run past (minimum stay) the plan, in days. */
-  stayFlexDays: number;
+  /** Target move-out date (ISO). null = indefinite (no end date). */
+  moveOut: string | null;
+  /** ± days around moveOut. */
+  moveOutFlexDays: number;
   /** Max monthly total incl. bills. null = any. */
   budget: number | null;
 }

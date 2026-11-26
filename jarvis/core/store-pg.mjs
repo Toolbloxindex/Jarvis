@@ -6,6 +6,7 @@ import { canonicalUrl, listingIdentity, planListingUpsert, listingUpdate } from 
 
 const travelPrefix = 'travel.listing.';
 const healthPrefix = 'discovery.health.';
+const aiCachePrefix = 'ai.cache.';
 const isCatalog = key => key === 'travel.catalog.local' || key === 'travel.catalog.v1';
 const iso = value => value == null ? null : new Date(value).toISOString();
 const alertReady = row => row.status === 'pending' ||
@@ -23,6 +24,8 @@ export class StorePg {
       rows = await sql`SELECT data FROM public.amenities WHERE key = ${key}`;
     } else if (key.startsWith(healthPrefix)) {
       rows = await sql`SELECT health AS data FROM public.sources WHERE id = ${key.slice(healthPrefix.length)}`;
+    } else if (key.startsWith(aiCachePrefix)) {
+      rows = await sql`SELECT data FROM public.ai_extraction_cache WHERE key = ${key.slice(aiCachePrefix.length)}`;
     } else {
       rows = await sql`SELECT data FROM public.settings WHERE key = ${key}`;
     }
@@ -46,6 +49,9 @@ export class StorePg {
     } else if (key.startsWith(healthPrefix)) {
       await sql`INSERT INTO public.sources (id, health) VALUES (${key.slice(healthPrefix.length)}, ${sql.json(value)})
         ON CONFLICT (id) DO UPDATE SET health = excluded.health`;
+    } else if (key.startsWith(aiCachePrefix)) {
+      await sql`INSERT INTO public.ai_extraction_cache (key, model, data) VALUES (${key.slice(aiCachePrefix.length)},
+        ${String(value?.model ?? '')}, ${sql.json(value)}) ON CONFLICT (key) DO UPDATE SET data = excluded.data`;
     } else {
       await sql`INSERT INTO public.settings (key, data) VALUES (${key}, ${sql.json(value)})
         ON CONFLICT (key) DO UPDATE SET data = excluded.data`;
@@ -214,6 +220,13 @@ export class StorePg {
   async pruneHistory(keep = '12 months') {
     const sql = this.sql;
     const [row] = await sql`SELECT public.prune_history(${keep}::interval) AS removed`;
+    return Number(row.removed);
+  }
+  async pruneAiCache(keep = '180 days') {
+    const sql = this.sql;
+    const [{ present }] = await sql`SELECT to_regclass('public.ai_extraction_cache') IS NOT NULL AS present`;
+    if (!present) return 0;
+    const [row] = await sql`SELECT public.prune_ai_cache(${keep}::interval) AS removed`;
     return Number(row.removed);
   }
   async close() { await this.sql.end({ timeout: 2 }); }

@@ -73,14 +73,17 @@ export function checkBudget(listing: Listing, budget: number | null): FitCheck {
 
 const DAY = 86_400_000;
 const AVG_MONTH_DAYS = 30.44;
-const dayNum = (iso: string) => Math.round(new Date(`${iso.slice(0, 10)}T12:00:00Z`).getTime() / DAY);
+const dayNum = (iso: string) => Math.floor(new Date(`${iso.slice(0, 10)}T12:00:00Z`).getTime() / DAY);
 const isoOf = (n: number) => new Date(n * DAY).toISOString().slice(0, 10);
 
 /** "3 days", "2 weeks", "about a month", "2 months". */
 export function formatSpan(days: number) {
   const d = Math.abs(Math.round(days));
   if (d < 10) return `${d} ${d === 1 ? "day" : "days"}`;
-  if (d < 25) return `${Math.round(d / 7)} weeks`;
+  if (d < 25) {
+    const w = Math.round(d / 7);
+    return w === 1 ? "1 week" : `${w} weeks`;
+  }
   if (d < 45) return "about a month";
   return `${Math.round(d / AVG_MONTH_DAYS)} months`;
 }
@@ -121,12 +124,29 @@ export function checkMoveIn(
   };
 }
 
-/** Stay: does the contract cover the planned stay, within the tolerance? */
+const fullDayFormat = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+/** "1 Jul 2027": contract ends are far enough out that the year matters. */
+const fullDay = (n: number) => fullDayFormat.format(new Date(n * DAY + DAY / 2));
+
+/** `months` calendar months after day `n`, clamped to the target month's last day. */
+function addMonthsN(n: number, months: number) {
+  const d = new Date(n * DAY);
+  const day = d.getUTCDate();
+  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, 1, 12));
+  const last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0, 12)).getUTCDate();
+  target.setUTCDate(Math.min(day, last));
+  return dayNum(target.toISOString());
+}
+
+/**
+ * Stay: does the contract cover the dates you need? The stay runs from the later of
+ * availability and your move-in to your move-out (null = indefinite).
+ */
 export function checkStay(
   listing: Listing,
-  criteria: Pick<SearchCriteria, "stayMonths" | "stayFlexDays">,
+  criteria: Pick<SearchCriteria, "moveIn" | "moveOut" | "moveOutFlexDays">,
 ): FitCheck {
-  const { minMonths, maxMonths } = listing.tenancy;
+  const { availableFrom, minMonths, maxMonths } = listing.tenancy;
   const describe =
     maxMonths === "indefinite"
       ? minMonths
@@ -141,60 +161,70 @@ export function checkStay(
   if (minMonths === null && maxMonths === null) {
     return { key: "stay", status: "unknown", label: "Contract length not stated", detail: describe };
   }
-  const { stayMonths, stayFlexDays: flex } = criteria;
-  if (stayMonths === null) {
-    // No end date: open-ended contracts fit; a fixed term means moving again.
+
+  const start = Math.max(dayNum(availableFrom), dayNum(criteria.moveIn ?? availableFrom));
+
+  if (criteria.moveOut === null) {
+    // Indefinite: open-ended contracts fit; a fixed term means moving again.
     if (typeof maxMonths === "number") {
       return {
         key: "stay",
         status: "unknown",
-        label: "Fixed term",
-        detail: `Ends after ${formatMonths(maxMonths)}, and you have no end date`,
+        label: `Fixed term, ends after ${formatMonths(maxMonths)}`,
+        detail: `Ends ${fullDay(addMonthsN(start, maxMonths))}, and you have no move-out date`,
       };
     }
     return { key: "stay", status: "pass", label: "Open-ended fits", detail: describe };
   }
 
-  const need = stayMonths * AVG_MONTH_DAYS;
+  const out = dayNum(criteria.moveOut);
+  const flex = criteria.moveOutFlexDays;
+  const outText = fullDay(out);
+
   if (typeof maxMonths === "number") {
-    const short = need - maxMonths * AVG_MONTH_DAYS;
-    if (short > flex + 1) {
+    const end = addMonthsN(start, maxMonths);
+    const endText = fullDay(end);
+    if (end < out - flex) {
       return {
         key: "stay",
         status: "fail",
         label: "Contract too short",
-        detail: `Ends after ${formatMonths(maxMonths)}, you plan ${formatMonths(stayMonths)}`,
+        detail: `Fixed term ends ${endText}, you move out ${outText}`,
       };
     }
-    if (short > 1) {
+    if (end < out) {
+      // Inside the person's own tolerance: it fits; say by how much.
       return {
         key: "stay",
-        status: "unknown",
-        label: "Ends a little early",
-        detail: `Fixed term ends ${formatSpan(short)} before you'd leave`,
+        status: "pass",
+        label: `Ends ${formatSpan(out - end)} early, within your flexibility`,
+        detail: `Fixed term ends ${endText}, you move out ${outText}`,
       };
     }
   }
+
   if (minMonths !== null) {
-    const extra = minMonths * AVG_MONTH_DAYS - need;
-    if (extra > flex + 1) {
+    const minEnd = addMonthsN(start, minMonths);
+    const minText = fullDay(minEnd);
+    if (minEnd > out + flex) {
       return {
         key: "stay",
         status: "fail",
         label: "Minimum stay too long",
-        detail: `Minimum ${formatMonths(minMonths)}, you plan ${formatMonths(stayMonths)}`,
+        detail: `Minimum ${formatMonths(minMonths)} runs to ${minText}, you move out ${outText}`,
       };
     }
-    if (extra > 1) {
+    if (minEnd > out) {
       return {
         key: "stay",
-        status: "unknown",
-        label: "Minimum a little longer",
-        detail: `Minimum stay is ${formatSpan(extra)} more than you plan`,
+        status: "pass",
+        label: `Minimum runs ${formatSpan(minEnd - out)} past, within your flexibility`,
+        detail: `Minimum ${formatMonths(minMonths)} runs to ${minText}`,
       };
     }
   }
-  return { key: "stay", status: "pass", label: "Stay length fits", detail: describe };
+
+  return { key: "stay", status: "pass", label: "Stay fits", detail: describe };
 }
 
 export function travelFor(listing: Listing, university: University): TravelEstimate {

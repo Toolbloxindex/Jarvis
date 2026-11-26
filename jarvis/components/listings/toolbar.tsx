@@ -18,7 +18,7 @@ export function SortMenu({ value, onChange }: { value: SortKey; onChange: (s: So
         <Menu.Positioner sideOffset={6} align="end" className="z-50 outline-none">
           <Menu.Popup
             className={cn(
-              "min-w-[220px] origin-[var(--transform-origin)] rounded-2xl bg-white p-1.5 shadow-[var(--shadow-sheet)] outline-none",
+              "hw-float-menu min-w-[220px] origin-[var(--transform-origin)] rounded-2xl bg-white p-1.5 shadow-[var(--shadow-sheet)] outline-none",
               "transition-[scale,opacity] duration-150 ease-[var(--ease-out)]",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
             )}

@@ -19,16 +19,18 @@ export interface MoveInCalendarProps {
   /** Selected move-in date, YYYY-MM-DD, or null. */
   value: string | null;
   onChange: (isoDate: string) => void;
-  /** "Today", YYYY-MM-DD. Days before it are disabled. Never call new Date() for "today" — use this prop (deterministic SSR). */
+  /** "Today", YYYY-MM-DD. Never call new Date() for "today" — use this prop (deterministic SSR). */
   today: string;
-  /** YYYY-MM-DD → number of homes that become available on that day. */
-  availability: Record<string, number>;
+  /** First selectable day (YYYY-MM-DD); days before it are disabled. Default: `today`. */
+  minDate?: string;
+  /** YYYY-MM-DD → number of homes that become available on that day. Omit for no dots. */
+  availability?: Record<string, number>;
   /** Months shown side by side: 2 on desktop panels, 1 on mobile. Default 2. */
   months?: 1 | 2;
   /** Last selectable day (YYYY-MM-DD). Default: today + 9 months. */
   maxDate?: string;
   /**
-   * ± days of flexibility around `value`. The band shows that window (clamped to today).
+   * ± days of flexibility around `value`. The band shows that window (clamped to `minDate`).
    * Omit to show the "available by" band from today up to `value`.
    */
   flexDays?: number;
@@ -253,11 +255,14 @@ interface ViewState {
   dir: -1 | 0 | 1;
 }
 
+const NO_AVAILABILITY: Record<string, number> = {};
+
 export function MoveInCalendar({
   value,
   onChange,
   today,
-  availability,
+  minDate,
+  availability = NO_AVAILABILITY,
   months = 2,
   maxDate,
   flexDays,
@@ -268,10 +273,11 @@ export function MoveInCalendar({
   const focusPending = useRef(false);
 
   const todayN = toDay(today);
-  const maxN = Math.max(todayN, maxDate ? toDay(maxDate) : addMonths(todayN, 9));
+  const minN = minDate ? toDay(minDate) : todayN;
+  const maxN = Math.max(minN, maxDate ? toDay(maxDate) : addMonths(todayN, 9));
   const valueN = value ? toDay(value) : null;
 
-  const minStart = monthOf(todayN);
+  const minStart = monthOf(minN);
   const maxStart = Math.max(minStart, monthOf(maxN) - (months - 1));
 
   const [view, setView] = useState<ViewState>(() => {
@@ -280,7 +286,7 @@ export function MoveInCalendar({
     return { first: clamp(anchor, minStart, maxStart), dir: 0 };
   });
   const [focusedN, setFocusedN] = useState<number>(() =>
-    clamp(valueN ?? todayN, todayN, maxN),
+    clamp(valueN ?? minN, minN, maxN),
   );
 
   const first = clamp(view.first, minStart, maxStart);
@@ -293,11 +299,11 @@ export function MoveInCalendar({
 
   // Roving tabindex target: the focused day if visible, else the selection, else the first open day.
   const isVisible = (n: number) => monthOf(n) >= first && monthOf(n) <= last;
-  const enabled = (n: number) => n >= todayN && n <= maxN;
+  const enabled = (n: number) => n >= minN && n <= maxN;
   let tabbableN: number;
   if (isVisible(focusedN) && enabled(focusedN)) tabbableN = focusedN;
   else if (valueN !== null && isVisible(valueN) && enabled(valueN)) tabbableN = valueN;
-  else tabbableN = clamp(firstDayOfMonth(first), todayN, maxN);
+  else tabbableN = clamp(firstDayOfMonth(first), minN, maxN);
 
   useEffect(() => {
     if (!focusPending.current) return;
@@ -311,7 +317,7 @@ export function MoveInCalendar({
   }
 
   function moveFocus(target: number) {
-    const next = clamp(target, todayN, maxN);
+    const next = clamp(target, minN, maxN);
     const m = monthOf(next);
     if (m < first) setView({ first: clamp(m, minStart, maxStart), dir: -1 });
     else if (m > last) setView({ first: clamp(m - (months - 1), minStart, maxStart), dir: 1 });
@@ -435,7 +441,7 @@ export function MoveInCalendar({
                         let roundStart = false;
                         let roundEnd = false;
                         const bandFrom =
-                          valueN === null ? null : flexDays === undefined ? todayN : Math.max(todayN, valueN - flexDays);
+                          valueN === null ? null : flexDays === undefined ? minN : Math.max(minN, valueN - flexDays);
                         const bandTo = valueN === null ? null : flexDays === undefined ? valueN : valueN + flexDays;
                         if (bandFrom !== null && bandTo !== null && bandTo > bandFrom && n >= bandFrom && n <= bandTo) {
                           const rowStart = ci === 0 || date === 1;

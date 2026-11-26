@@ -21,10 +21,10 @@ export const AULA: GeoPoint & { name: string } = {
 
 export const DEFAULT_SEARCH = {
   university: "tud",
-  moveIn: "2027-02-01",
+  moveIn: "2027-01-01",
   moveInFlexDays: 30,
-  stayMonths: 12,
-  stayFlexDays: 30,
+  moveOut: "2027-12-31",
+  moveOutFlexDays: 30,
   budget: 1000,
 } satisfies SearchCriteria;
 

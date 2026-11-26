@@ -1,5 +1,6 @@
 import { runPublicDiscovery } from './discovery.mjs';
 import { createTravelService, listingTravelKey } from './travel.mjs';
+import { runAiPass } from './ai-collect.mjs';
 
 const queueKey = 'collector.travel.pending';
 
@@ -29,6 +30,7 @@ export async function runCollector(store, {
   makeTravel = createTravelService,
   fetcher = fetch,
   budget = travelBudget,
+  aiPass = runAiPass,
   revalidateUrl = process.env.HOUSEWATCH_REVALIDATE_URL,
   revalidateToken = process.env.HOUSEWATCH_REVALIDATE_TOKEN,
 } = {}) {
@@ -37,6 +39,7 @@ export async function runCollector(store, {
   let travelChecked = 0;
   let travelUpdated = 0;
   let travelFailed = 0;
+  let ai = {};
   try {
     const limit = budget();
     const result = await discover(store);
@@ -66,13 +69,15 @@ export async function runCollector(store, {
       }
     }
     if (pending.length) await store.setConfig(queueKey, remaining);
+    // Enrichment only: the pass logs and swallows its own failures.
+    ai = await aiPass(store, result.aiIds ?? []);
     await store.finishCollectorRun(id, counts);
   } catch (error) {
     await store.finishCollectorRun(id, { ...counts, error: 'Collection interrupted.' });
     throw error;
   }
-  const revalidated = counts.added || counts.changed || travelUpdated
+  const revalidated = counts.added || counts.changed || travelUpdated || ai.aiUpdated
     ? await notifyRevalidation(fetcher, revalidateUrl, revalidateToken)
     : null;
-  return { ...counts, travelChecked, travelUpdated, travelFailed, revalidated };
+  return { ...counts, travelChecked, travelUpdated, travelFailed, ...ai, revalidated };
 }

@@ -15,7 +15,7 @@ import Image from "next/image";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
-import { useIsHovered } from "@/lib/hover-store";
+import { useIsCursor, useIsHovered } from "@/lib/hover-store";
 import { formatEUR } from "@/lib/listings/format";
 import { distanceKm } from "@/lib/listings/geo";
 import type { ListingView } from "@/lib/listings/match";
@@ -211,11 +211,25 @@ export default function ListingMap({
     };
   }, [listings, nodes]);
 
-  // Switching university moves the campus marker; the map itself is never rebuilt.
+  // Switching university moves the campus marker and glides the map to it; the map itself is
+  // never rebuilt. A campus in town is framed with the homes; a far one (Rotterdam, Leiden) is
+  // framed together with the homes so both stay in view.
+  const firstCampus = useRef(true);
   useEffect(() => {
     campusRef.current = campus;
     campusMarkerRef.current?.setLngLat([campus.lng, campus.lat]);
-  }, [campus]);
+    if (firstCampus.current) {
+      firstCampus.current = false;
+      return;
+    }
+    const map = mapRef.current;
+    if (!map) return;
+    const bounds = new LngLatBounds();
+    for (const l of listings) bounds.extend([l.location.lng, l.location.lat]);
+    bounds.extend([campus.lng, campus.lat]);
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    map.fitBounds(bounds, { padding: FIT_PADDING, duration: reduce ? 0 : 900, maxZoom: 14.5, essential: false });
+  }, [campus, listings]);
 
   // Collision pass, like Airbnb: price pills that would overlap a more important pill collapse
   // into dots. Priority: selected, open, saved, then list order. Hover never triggers it.
@@ -382,7 +396,9 @@ const PricePin = memo(function PricePin({
   onSelectRef,
   onOpenRef,
 }: PricePinProps) {
-  const hovered = useIsHovered(listing.id);
+  const isHovered = useIsHovered(listing.id);
+  const isCursor = useIsCursor(listing.id);
+  const hovered = isHovered || isCursor;
   const visible = view !== null;
   const active = hovered || selected || open;
   const dot = compact && !active;

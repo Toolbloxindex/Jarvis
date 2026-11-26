@@ -11,7 +11,26 @@ import { flushSync } from "react-dom";
  * `kind` is written to <html data-vt> for the duration, so CSS can decide which elements
  * take part (see globals.css). Only one transition runs at a time; a newer one skips the older.
  */
-export type TransitionKind = "results" | "detail";
+export type TransitionKind = "results" | "layout" | "detail";
+
+/**
+ * Snapshotting is the expensive part of a view transition, so only cards near the viewport take
+ * part (offscreen cards just update). Returns a cleanup.
+ */
+function nameVisibleCards() {
+  const margin = window.innerHeight * 0.5;
+  const named: Element[] = [];
+  for (const el of document.querySelectorAll(".hw-card")) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom > -margin && r.top < window.innerHeight + margin) {
+      el.classList.add("vt-on");
+      named.push(el);
+    }
+  }
+  return () => {
+    for (const el of named) el.classList.remove("vt-on");
+  };
+}
 
 let token = 0;
 
@@ -37,6 +56,7 @@ export function runTransition(
   const mine = ++token;
   const root = document.documentElement;
   root.dataset.vt = kind;
+  const unname = kind === "detail" ? null : nameVisibleCards();
   hooks.before?.();
   const vt = document.startViewTransition(async () => {
     flushSync(update);
@@ -47,6 +67,7 @@ export function runTransition(
   vt.updateCallbackDone.catch(() => {});
   vt.finished.finally(() => {
     if (mine === token) delete root.dataset.vt;
+    unname?.();
     hooks.done?.();
   }).catch(() => {});
 }

@@ -179,13 +179,13 @@ const minutes = (values: number[]) => [
 export function FiltersPanel({
   filters,
   onChange,
-  resultCount,
   inSheet = false,
   universityName = "campus",
 }: {
   filters: Filters;
   onChange: (f: Filters) => void;
-  resultCount: number;
+  /** Kept for callers; the count lives in the toolbar now. */
+  resultCount?: number;
   /** In the sheet the title already sits in the sheet header. */
   inSheet?: boolean;
   /** Short name of the chosen university, for the travel section. */
@@ -216,11 +216,7 @@ export function FiltersPanel({
           Clear all
         </button>
       </div>
-      {!inSheet && (
-        <p className="tabular text-[13px] text-ink-2">
-          {resultCount} {resultCount === 1 ? "home matches" : "homes match"}
-        </p>
-      )}
+
 
       <Section title="Type">
         <div className="flex flex-wrap gap-1.5">
