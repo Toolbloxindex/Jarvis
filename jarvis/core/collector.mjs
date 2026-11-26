@@ -118,7 +118,7 @@ export async function runCollector(store, {
     // Amenity catalogs for cities that lack one (two per run; each is one Overpass query).
     if (travel.warmCatalogs) await travel.warmCatalogs(2).catch(() => []);
     // Enrichment only: the pass logs and swallows its own failures.
-    ai = left() > 120_000 ? await aiPass(store, result.aiIds ?? []) : { aiSkipped: 'out of time' };
+    ai = left() > 60_000 ? await aiPass(store, result.aiIds ?? []) : { aiSkipped: 'out of time' };
     mark('ai done');
     await store.finishCollectorRun(id, counts);
   } catch (error) {
