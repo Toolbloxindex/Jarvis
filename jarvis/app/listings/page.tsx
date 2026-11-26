@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { ListingsExperience } from "@/components/listings/listings-experience";
-import { AULA, DEFAULT_SEARCH, MOCK_NOW } from "@/lib/listings/data";
+import { DEFAULT_SEARCH, MOCK_NOW } from "@/lib/listings/data";
 import { getUiFeed } from "@/lib/server/listings-repo";
 
 export const metadata: Metadata = {
@@ -13,7 +13,6 @@ export default async function ListingsPage() {
   return (
     <ListingsExperience
       listings={listings}
-      campus={AULA}
       now={MOCK_NOW}
       initialSearch={DEFAULT_SEARCH}
     />

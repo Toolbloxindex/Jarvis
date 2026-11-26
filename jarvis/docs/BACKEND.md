@@ -1,38 +1,47 @@
 # Housewatch backend
 
-`core/` contains the headless public collector, matcher, SQLite store, and travel engine. The Next.js server adapter reads Delft property ads from SQLite, groups the store's linked duplicates, and maps advertised terms, evidence flags, and cached travel. The feed uses the existing mock listings when the database is missing, empty, or holds no Delft property ads. `updatedAt` is the latest stored change or source sighting in the live feed. The Facebook compatibility module leaves offers unchanged and supplies an empty duplicate key because the original Facebook module was missing.
-
-The collector installs the price and availability history trigger when it opens the store. New changes are captured atomically with the listing update. For older databases, history starts with the recorded first sighting and linked duplicate sightings, then adds any changes captured after initialization.
+SQLite is the default for development. The app uses the existing mock listings when the selected store has no Delft property ads. In Supabase mode the app reads curated data through the `public_listings`, `public_amenities`, and `public_feed_status` views using the server-side anon client. The worker writes through the Postgres transaction pooler. The migration keeps raw listings, settings, and manual travel origins private.
 
 ## Configuration
 
-| Environment variable | Purpose |
+| Environment variable | Used by |
 | --- | --- |
-| `HOUSEWATCH_DB` | SQLite file for the app and both CLIs. Defaults to `./data/housing.sqlite`. Use a dedicated directory because the collector sets private permissions on it. Share the same database between Next.js and the collector. |
-| `HOUSEWATCH_MOTIS_URL` | Optional loopback HTTP address of the MOTIS timetable planner. Transit minutes require a cached, still-valid timetable sample. |
-| `HOUSEWATCH_AMENITIES_FILE` | Optional path to the local amenities JSON catalogue. |
-| `HOUSEWATCH_REVALIDATE_TOKEN` | Enables the bearer-token protected `POST /api/revalidate`. |
+| `HOUSEWATCH_STORE` | App and CLI. Defaults to `sqlite`. Set `supabase` to use Postgres and the public Supabase views. |
+| `HOUSEWATCH_DB` | SQLite file. Defaults to `./data/housing.sqlite`. Use a dedicated directory because SQLite initialization sets private permissions. |
+| `SUPABASE_DB_URL` | Collector and prune job. Use the Supabase transaction pooler URL on port 6543 with the database password. Also grants the app permission to calculate travel on demand if set on Vercel. |
+| `NEXT_PUBLIC_SUPABASE_URL` | App. The Supabase project's HTTPS URL. |
+| `SUPABASE_ANON_KEY` | App. The project's anon key used in the server-only client. |
+| `HOUSEWATCH_REVALIDATE_URL` | Collector. Full URL of the app's `/api/revalidate` route. |
+| `HOUSEWATCH_REVALIDATE_TOKEN` | Collector and app. Use the same secret on both. |
+| `HOUSEWATCH_TRAVEL_BUDGET` | Collector. Defaults to 10 listings per run. Set to 0 to defer all automated travel. |
+| `HOUSEWATCH_MOTIS_URL` | Optional local loopback timetable planner. Transit needs a valid cached sample. |
+| `HOUSEWATCH_AMENITIES_FILE` | Optional local amenities catalogue JSON for travel and the SQLite feed. |
 
-Node 22.16 runs `node:sqlite` directly and emits the experimental SQLite warning. The travel CLI and tests also enable native TypeScript stripping. Next.js uses the Node runtime and enforces the server-only import boundary. The existing Next.js configuration supports the backend.
+## Local commands
 
-## Running it
+Run from `jarvis/` with Node 22.16 or later. CI runs Node 24.
 
 ```sh
+npm ci
+npm run dev
+npm run test:core
+npm run verify:sources
 npm run collect
 npm run travel -- <listingId>
-npm run test:core
 ```
 
-`collect` runs one public discovery pass, honors per-source scheduling, and prints `checked`, `added`, and `changed`. Run one collector at a time per database. `travel` uses the requested listing and writes its route cache. Both commands use environment variables exported in the shell. The tests use temporary databases and fixture responses.
+`collect` checks real sources that are due, records run timestamps and counts, and calculates travel for new or moved listings within its budget. Excess work stays queued for later passes. `travel` calculates for one existing listing. Both commands can contact routing providers. The tests use fixture databases and mocked responses.
 
-`GET /api/listings` and the page adapter share the `listings` cache tag. After five minutes, the next request can receive the previous feed while Next.js refreshes it. The entry expires after one hour. For immediate expiration after collection, send `POST /api/revalidate` with `Authorization: Bearer <token>` and request the feed again. Collection leaves cache invalidation to the app or the operator.
+`verify:sources` checks public rental pages, applies robots rules and source backoff, and stops a source on HTTP 403 or 429. Pass `-- --source=<id>` to check one source. Raw responses and reports are private local files under gitignored `data/verify/`. The verifier leaves the listings database read-only.
 
-`GET /api/listings/<id>/travel` reads cached walk, bike, and transit minutes for the Aula and cached amenities. `POST` calculates or refreshes that one listing on open. Missing times are null. `provider_unavailable` can include partial results, and `location_unresolved` indicates a lookup without a matching address. The corresponding mock endpoint response uses the existing mock transit value while the feed is in mock mode.
+Production uses the `days` cache profile with the `listings` tag. After a changed pass, the collector posts to `/api/revalidate` with a bearer token and a five-second timeout. The endpoint expires the tag and the next request refreshes the feed. SQLite keeps its five-minute time-based refresh. `updatedAt` reflects the latest finished run in the cached feed. Legacy local listings can fall back to their last observed timestamp.
 
-## Listings page
+`GET /api/listings/<id>/travel` returns cached travel. `POST` returns recent cached travel or attempts a calculation under a 24-hour per-listing cooldown in writable mode. Supabase deployments with read credentials alone serve cached results for both methods. The daily prune job retains 12 months of price and availability history, collector runs, and events, plus the latest completed run.
 
-`/listings` awaits `getUiFeed(MOCK_NOW)` in `app/listings/page.tsx`. To switch to a real clock, derive one timestamp there and pass it to both the feed and the experience. Derive it within a cache scope to keep the page prerenderable.
+Campus destinations come from `lib/universities.ts`. An OSRM table request per mode covers all campuses, the nearby amenities, and, when needed, station access. The worker caches the results in the existing SQLite and Supabase travel payloads. Previously cached Aula-only rows keep their legacy result until the listing moves or its travel is recalculated.
 
-The page feed omits ads that lack coordinates, rent, photos, or either amenity. `getUiFeed` reports the counts in `skipped` as `noCoordinates`, `noRent`, `noPhotos`, and `awaitingTravelData`. A listing can count toward several reasons. If every live ad is skipped, the page receives an empty live feed. Missing amenities are filled from the local catalogue or the shared travel cache using straight-line distance.
+MOTIS provides a weekday morning transit sample when configured. Otherwise the rail estimate adds station access (with a small bike parking allowance), typical train time, half the off-peak headway, and the last mile. Erasmus also considers metro plus walking. The fallback reports whole-minute estimates and leaves Delft-local transit blank. Rail inputs and sources are in `core/university-travel.mjs`.
 
-Review flags identify the advertised rent quote, the placeholder move-in date, furnishing, and other unconfirmed details. Unknown floor area uses the same-kind live median, with the same-kind mock median when no live measurement is available.
+Routing data uses OpenStreetMap and the FOSSGIS routing service. [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) · [Fix the map](https://www.openstreetmap.org/fixthemap) · [FOSSGIS routing usage policy](https://routing.openstreetmap.de/about.html)
+
+Setup for the database, Actions, and Vercel is in [Deployment plan](DEPLOYMENT-PLAN.md#what-needs-your-access).

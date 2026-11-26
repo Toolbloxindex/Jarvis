@@ -50,6 +50,22 @@ function safeUrl(value) {
   try { const u=new URL(value); return ['https:','http:'].includes(u.protocol) ? u.href : null; } catch { return null; }
 }
 
+// Shared with the feed adapter so Dutch and English advertisements use the same occupancy evidence.
+export const APPLICANT_WORDING = Object.freeze({
+  studentsOnly: /\b(?:students? only|only (?:for )?students?|alleen (?:voor )?studenten|uitsluitend (?:voor )?studenten)\b/i,
+  couplesNo: /\b(?:no couples|couples (?:are )?(?:not allowed|not accepted)|not suitable for couples|geen (?:stellen|koppels|stel)|(?:stellen|koppels) (?:zijn )?niet toegestaan)\b/i,
+  couplesYes: /\b(?:couples (?:are )?(?:welcome|allowed|accepted)|(?<!not )suitable for couples|geschikt voor (?:stellen|koppels)|(?:stellen|koppels) (?:welkom|toegestaan)|(?:ph\.?d\.?[- ]?|werkend(?:e)? )(?:stel|koppel) (?:is )?mogelijk)\b/i,
+  petsNo: /\b(?:no pets|pets (?:in the rental )?(?:are |is )?(?:not allowed|not accepted|not permitted|prohibited)|geen huisdieren|huisdieren (?:in het gehuurde )?(?:zijn |is )?niet toegestaan)\b/i,
+  petsYes: /\b(?:pet[ -]friendly|pets (?:are )?(?:welcome|allowed|accepted)|huisdieren (?:welkom|toegestaan))\b(?!\s+(?:(?:only )?(?:on|by|with|in)\b|upon\b))/i,
+  phdYes: /\b(?:ph\.?d\.?(?:[- ](?:stel|koppel|students?))?|promovendi|doctoraatsstudenten)\s+(?:(?:is|are|zijn)\s+)?(?:possible|mogelijk|welkom|toegestaan|accepted|allowed|welcome)\b/i,
+  phdNo: /\b(?:(?:no|geen) (?:ph\.?d\.?s?|promovendi)|(?:ph\.?d\.?s?|promovendi) (?:are |zijn |is )?(?:not (?:allowed|possible)|niet (?:toegestaan|mogelijk)))\b/i,
+  workingYes: /\b(?:werkend(?:e)? (?:stel|koppel|huurders?)|working\)? (?:couple|professionals?))\b/i,
+});
+
+export function isImmediateAvailability(value) {
+  return /^(?:per direct|direct beschikbaar|beschikbaar per direct|immediately|available (?:now|immediately))\s*[.!]?$/i.test(String(value ?? '').trim());
+}
+
 /** Parse explicit English/Dutch terms only. Conflicting extraction is marked for review. */
 export function parseListingText(text,source='manual',url=null) {
   const body=String(text ?? '').slice(0,100_000);
@@ -96,11 +112,16 @@ export function parseListingText(text,source='manual',url=null) {
     const excluded=/\b(?:excl(?:uding|usief)?\.?|excluding)\s*(?:(?:all|alle)\s+)?(?:bills|utilities|g\s*[/,]\s*w\s*[/,]\s*[el]|gas|water|electricity|elektriciteit|energy|energie|service(?:kosten| costs)?)/i.test(context)||/^\s*p\.?m\.?\s+ex(?:cl)?\.?/i.test(selected.after);
     const included=/\b(?:all[ -]?in(?:clusive)?|all (?:utilities|bills) (?:are )?included|incl(?:uding|usief)?\.?\s*(?:(?:all|alle)\s+)?(?:bills|utilities|g\s*[/,]\s*w\s*[/,]\s*[el]|gas.{0,30}(?:electricity|elektriciteit)|service(?:kosten| costs)?\s*(?:and|en)\s*(?:utilities|gwe)))\b/i.test(context);
     listing.rent_excludes_bills=excluded?true:included?false:null;
-    if(included&&!excluded){listing.rent_total=selected.value;listing.evidence.rent_total=excerpt(selected.index,selected.length);}
+    if(included&&!excluded){
+      listing.rent_total=selected.value;
+      listing.evidence.rent_total=listing.evidence.rent_base;
+      listing.rent_base=null;
+      delete listing.evidence.rent_base;
+    }
     if(included&&excluded)listing.extraction_warnings.push('Price includes conflicting included/excluded cost wording.');
     const categories=new Map();for(const c of listing.monthly_costs.filter(c=>!c.conditional)){const old=categories.get(c.label);if(old&&old.amount!==c.amount)listing.extraction_warnings.push('Conflicting '+c.label.toLowerCase()+' amounts are stated.');if(!old)categories.set(c.label,c);}
     listing.rent_known_monthly_min=listing.rent_total??Math.round((selected.value+[...categories.values()].reduce((sum,c)=>sum+c.amount,0))*100)/100;
-    listing.evidence.rent_known_monthly_min=[listing.evidence.rent_base,...[...categories.values()].map(c=>c.evidence)].join(' | ').slice(0,500);
+    listing.evidence.rent_known_monthly_min=[listing.evidence.rent_base??listing.evidence.rent_total,...[...categories.values()].map(c=>c.evidence)].join(' | ').slice(0,500);
   }
   for(const line of body.split(/\n|;/)){if(!/\b(?:exclud(?:e[ds]?|ing)|excl(?:usief)?\.?|exclusief)\b/i.test(line))continue;
     for(const [label,re]of [['electricity',/electricity|elektra|elektriciteit|\blicht\b/i],['water',/\bwater\b/i],['gas',/\bgas\b/i],['internet',/internet|wifi/i],['television',/television|televisie/i]])if(re.test(line)&&!listing.bills_missing.includes(label))listing.bills_missing.push(label);
@@ -122,6 +143,18 @@ export function parseListingText(text,source='manual',url=null) {
     const context=monthStart?body.slice(Math.max(0,monthStart.index-35),monthStart.index+monthStart[0].length):'';
     if(monthStart&&!/\b(?:viewings?|bezichtig\w*|posted|publication|not available|niet beschikbaar)\b/i.test(context)){listing.start_month=`${monthStart[2]}-${String(MONTHS[monthStart[1].toLowerCase()]).padStart(2,'0')}`;listing.start_kind=startKind(monthStart[0]);listing.evidence.start_month=monthStart[0];}
   }
+  if(!listing.start_date&&!listing.start_month){
+    const immediate=body.match(/\b(?:available (?:from )?(?:now|immediately|per direct)|(?:beschikbaar|aanvaarding|oplevering)\s*:?\s*per direct|per direct beschikbaar|direct beschikbaar)\b/i);
+    const context=immediate?body.slice(Math.max(0,immediate.index-18),immediate.index):'';
+    if(immediate&&!/\b(?:not|niet|never|nooit)\s*$/i.test(context)){
+      listing.start_kind='immediate';
+      listing.availability_text=immediate[0];
+      listing.evidence.start_kind=immediate[0];
+    }else{
+      const partial=body.match(new RegExp(`(?:available\\s+(?:from|on)|beschikbaar\\s+(?:vanaf|per)|ingangsdatum)\\s*[:=]?\\s*(\\d{1,2}\\s+(?:${MONTH_RE}))\\b(?!\\s+\\d{4})`,'i'));
+      if(partial){listing.availability_text=partial[1];listing.evidence.availability_text=partial[0];}
+    }
+  }
   const units='(months?|maand(?:en)?|years?|jaar)';
   const duration=body.match(new RegExp('(?:rental\\s+(?:period|duration)|huurperiode|huurduur|contract)\\s*[:=]?\\s*(?:(?:for|of|van)\\s+)?(\\d+)\\s*'+units+'\\b','i'));
   const maximum=body.match(new RegExp('(?:max(?:imum|imaal)?\\.?|up to|at most)\\s*(?:(?:stay|rental period|rental duration|huurduur|huurperiode)\\s*)?[:=]?\\s*(?:(?:of|van)\\s*)?(\\d+)\\s*'+units+'\\b','i'));
@@ -141,6 +174,11 @@ export function parseListingText(text,source='manual',url=null) {
   if(/\b(?:indefinite|permanent contract|permanent tenancy|onbepaalde tijd)\b/i.test(body)&&!/\b(?:no|not|geen|niet)\s+(?:an?\s+)?(?:indefinite|permanent contract|permanent tenancy|onbepaalde tijd)\b/i.test(body))listing.indefinite=true;
   if(/\b(?:no students|students (?:are )?(?:not allowed|not accepted|excluded)|not (?:suitable|available|open) (?:for|to) students|geen studenten|studenten (?:niet toegestaan|uitgesloten))\b/i.test(body)) listing.student_allowed=false;
   else if(/\b(?:(?:ideal|suitable|perfect) for students|geschikt voor studenten|students (?:are )?(?:welcome|allowed|accepted)|student(?:s|en)? (?:housing|room)|geschikt voor studenten|studenten welkom|studentenkamer|(?:room|housing|accommodation|kamers?|woningen?) (?:only )?(?:for|voor) (?:bachelor )?(?:students?|studenten)|(?:full[ -]?time|voltijd)studenten?|(?:full[ -]?time\s+)?students only|ideal.{0,80}students|verhuurd aan.{0,50}studenten|(?:Dutch|international|Nederlandse|internationale).{0,20}studenten)\b/i.test(body)) listing.student_allowed=true;
+  if(listing.student_allowed==null&&APPLICANT_WORDING.studentsOnly.test(body)) listing.student_allowed=true;
+  for(const [field,yes,no] of [['couples_allowed','couplesYes','couplesNo'],['pets_allowed','petsYes','petsNo'],['phd_allowed','phdYes','phdNo']]){
+    const positive=body.match(APPLICANT_WORDING[yes]),negative=body.match(APPLICANT_WORDING[no]);
+    if(Boolean(positive)!==Boolean(negative)){listing[field]=!!positive;listing.evidence[field]=(positive||negative)[0];}
+  }
   const advancedDegree=body.match(/\b(?:master'?s?\s*(?:students?)?\s*(?:or|and|\/)?\s*(?:phd|postdoc)|master'?s? students only|alleen masterstudenten|uitsluitend masterstudenten|no bachelor(?:'?s)? students|not (?:suitable|available) for bachelor(?:'?s)? students|geen bachelorstudenten|requirements?\s*[:–-]?\s*(?:being|be|must be)\s+(?:a )?master'?s? student|(?:looking for|must be)[^.!?\n]{0,65}\bmaster'?s? student\s*(?:&|and)\s*(?:at least|min(?:imum)?))\b/i);
   if(advancedDegree&&!/\b(?:preferably|preference|bij voorkeur|ideally)\b/i.test(body.slice(Math.max(0,advancedDegree.index-45),advancedDegree.index+advancedDegree[0].length))){
    listing.degree_restriction='postgraduate';listing.student_allowed=true;
@@ -154,7 +192,7 @@ export function parseListingText(text,source='manual',url=null) {
   if(ageRange) {listing.age_min=+ageRange[1];listing.age_max=+ageRange[2];}
   const ageMin=body.match(/(?:minimum age|minimale leeftijd|age(?:d)?|leeftijd)\s*[:=]?\s*(\d{2})\s*\+?|\b(\d{2})\s*\+\s*(?:years?(?: old)?|jaar(?: oud)?)|\b(?:at least|minimaal)\s+(\d{2})\s+(?:years? old|jaar oud)\b/i);
   if(ageMin){listing.age_min=+(ageMin[1]||ageMin[2]||ageMin[3]);listing.evidence.age_min=ageMin[0];}
-  if(/\b(?:working professionals? only|working people only|alleen werkenden|uitsluitend werkenden)\b/i.test(body)) listing.working_only=true;
+  if(/\b(?:working professionals? only|working people only|(?:alleen|uitsluitend) werkend(?:e|en)?(?: huurders?)?)\b/i.test(body)) listing.working_only=true;
   const weekdays=body.match(/\b(?:weekdays only|only available on weekdays|you (?:must|have to) leave (?:on|at) weekends|in het weekend ga je (?:weer )?naar huis)\b/i);
   if(weekdays){listing.weekdays_only=true;listing.evidence.weekdays_only=weekdays[0];}
   if(/\b(?:female(?:s)? only|male(?:s)? only|women only|men only|only (?:female|male) (?:students?|tenants?|housemates?)|alleen (?:vrouwen|mannen|meisjes|jongens)|uitsluitend (?:vrouwen|mannen|meisjes|jongens))\b/i.test(body)) listing.household_restriction_unverified=true;
@@ -225,7 +263,7 @@ export function evaluateListing(listing,profile=DEFAULT_PROFILE) {
    if(!viable)reject(`No advertised availability window supports a ${p.min_stay_months}-month stay from your dates.`);
    else if(!periods.some(({start,end})=>{const moveIn=start&&start>p.start_min?start:p.start_min;return start&&moveIn<=p.start_max&&(!end||end>=addMonths(moveIn,p.min_stay_months));}))review('Confirm that the open calendar period starts within your move-in window.');
   } else if(l.start_date && parseDate(l.start_date)) {
-    if(l.start_date>p.start_max||l.start_date<p.start_min&&l.start_kind!=='earliest')reject(`The stated tenancy start falls outside the approved ${p.start_min} to ${p.start_max} window.`);
+    if(l.start_date>p.start_max||l.start_date<p.start_min&&!['earliest','immediate'].includes(l.start_kind))reject(`The stated tenancy start falls outside the approved ${p.start_min} to ${p.start_max} window.`);
     else if(l.start_date<p.start_min)review('Available earlier. Confirm the landlord accepts a move-in within your dates.');
   } else if(/^\d{4}-(?:0[1-9]|1[0-2])$/.test(l.start_month||'')){
     const [year,month]=l.start_month.split('-').map(Number);const first=l.start_month+'-01';const last=l.start_month+'-'+new Date(Date.UTC(year,month,0)).getUTCDate();

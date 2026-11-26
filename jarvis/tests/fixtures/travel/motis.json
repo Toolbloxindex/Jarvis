@@ -1,0 +1,9 @@
+{
+  "itineraries": [
+    {
+      "startTime": "2026-11-23T07:33:00Z",
+      "endTime": "2026-11-23T08:05:00Z",
+      "legs": [{ "mode": "WALK", "distance": 200 }, { "mode": "RAIL" }]
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+name: Housewatch collector
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: housewatch-collector
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: jarvis
+
+jobs:
+  collect:
+    if: github.event.schedule != '0 3 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: jarvis/package-lock.json
+      - run: npm ci
+      - run: npm run collect
+        env:
+          HOUSEWATCH_STORE: supabase
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          HOUSEWATCH_REVALIDATE_URL: ${{ secrets.HOUSEWATCH_REVALIDATE_URL }}
+          HOUSEWATCH_REVALIDATE_TOKEN: ${{ secrets.HOUSEWATCH_REVALIDATE_TOKEN }}
+          HOUSEWATCH_TRAVEL_BUDGET: ${{ vars.HOUSEWATCH_TRAVEL_BUDGET || '10' }}
+
+  prune:
+    if: github.event.schedule == '0 3 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: jarvis/package-lock.json
+      - run: npm ci
+      - run: npm run prune
+        env:
+          HOUSEWATCH_STORE: supabase
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}

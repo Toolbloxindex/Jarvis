@@ -68,6 +68,8 @@ interface ListingDetailProps {
   onClose: () => void;
   /** Element to make inert while the dialog is open. */
   appRootId: string;
+  /** "TU Delft · Aula": where travel times are measured to. */
+  university: string;
 }
 
 /**
@@ -80,10 +82,12 @@ export function ListingDetail(props: ListingDetailProps) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
+  const actionsRef = useRef({ save: props.onToggleSave, pass: props.onPass });
 
   useEffect(() => {
     onCloseRef.current = onClose;
-  }, [onClose]);
+    actionsRef.current = { save: props.onToggleSave, pass: props.onPass };
+  }, [onClose, props.onToggleSave, props.onPass]);
 
   // Modal behaviour: inert background, scroll lock, Escape, focus in and back out.
   useEffect(() => {
@@ -97,7 +101,13 @@ export function ListingDetail(props: ListingDetailProps) {
     // in the same task as the open, which measurably stalled the first frame.
     const raf = requestAnimationFrame(() => closeRef.current?.focus({ preventScroll: true }));
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
+      if (e.key === "Escape") return onCloseRef.current();
+      const el = e.target as HTMLElement | null;
+      if (e.metaKey || e.ctrlKey || e.altKey || el?.closest("textarea,input")) return;
+      const k = e.key.toLowerCase();
+      if (k === "e") return onCloseRef.current();
+      if (k === "s") actionsRef.current.save();
+      if (k === "d") actionsRef.current.pass();
     };
     document.addEventListener("keydown", onKey);
     return () => {
@@ -225,15 +235,15 @@ export function ListingDetail(props: ListingDetailProps) {
               </div>
             </div>
 
-            <div className="mt-8 grid gap-10 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-14">
+            <div className="select-text mt-8 grid gap-10 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-14">
               <div className="min-w-0">
-                <Overview view={view} now={now} titleId={titleId} />
+                <Overview view={view} now={now} titleId={titleId} university={props.university} />
                 <FitSection view={view} />
                 {listing.flags.length > 0 && (
                   <ConfirmSection view={view} checked={props.checked} onToggle={props.onToggleCheck} />
                 )}
                 <ScoresSection view={view} />
-                <TravelSection view={view} />
+                <TravelSection view={view} university={props.university} />
                 <EligibilitySection listing={listing} />
                 <AboutSection listing={listing} />
                 <TermsSection listing={listing} now={now} />
@@ -292,7 +302,17 @@ function Section({
   );
 }
 
-function Overview({ view, now, titleId }: { view: ListingView; now: string; titleId: string }) {
+function Overview({
+  view,
+  now,
+  titleId,
+  university,
+}: {
+  view: ListingView;
+  now: string;
+  titleId: string;
+  university: string;
+}) {
   const { listing, travel } = view;
   const { location } = listing;
   const address =
@@ -311,7 +331,7 @@ function Overview({ view, now, titleId }: { view: ListingView; now: string; titl
     {
       icon: <BicycleIcon size={20} />,
       value: `${travel.approximate ? "≈ " : ""}${travel.bike} min`,
-      label: "to TU Delft by bike",
+      label: `to ${university.split(" · ")[0]} by bike`,
     },
     {
       icon: <CalendarBlankIcon size={20} />,
@@ -510,26 +530,26 @@ function ScoresSection({ view }: { view: ListingView }) {
   );
 }
 
-function TravelSection({ view }: { view: ListingView }) {
+function TravelSection({ view, university }: { view: ListingView; university: string }) {
   const { travel, listing } = view;
   const approx = travel.approximate;
   const gym = estimateTravel(listing.location, listing.nearestGym);
   const modes = [
     { icon: BicycleIcon, label: "Cycling", value: travel.bike },
-    { icon: BusIcon, label: "Public transport", value: travel.transit },
+    { icon: BusIcon, label: travel.transitEstimated ? "Public transport, estimated" : "Public transport", value: travel.transit },
     { icon: PersonSimpleWalkIcon, label: "Walking", value: travel.walk },
   ];
   return (
     <Section
       title="Getting around"
-      aside={<span className="tabular text-[14px] text-ink-2">{formatKm(travel.km)} to TU Delft Aula</span>}
+      aside={<span className="tabular text-[14px] text-ink-2">{formatKm(travel.km)} to {university}</span>}
     >
       <div className="grid grid-cols-3 divide-x divide-line-soft">
         {modes.map(({ icon: Icon, label, value }) => (
           <div key={label} className="px-4 first:pl-0">
             <Icon size={20} />
             <p className="tabular mt-2.5 text-[22px] leading-none font-semibold tracking-[-0.02em]">
-              {value === null ? "–" : `${approx ? "≈" : ""}${value}`}
+              {value === null ? "–" : `${approx || (Icon === BusIcon && travel.transitEstimated) ? "≈" : ""}${value}`}
               {value !== null && <span className="ml-1 text-[14px] font-medium tracking-normal">min</span>}
             </p>
             <p className="mt-1.5 text-[13px] text-ink-2">{value === null ? "No timetable data" : label}</p>
@@ -551,8 +571,18 @@ function TravelSection({ view }: { view: ListingView }) {
           </span>
         </li>
       </ul>
+      <p className="mt-4 text-[12px] leading-4 text-ink-3">
+        Walking and cycling routes ©{" "}
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+          OpenStreetMap contributors
+        </a>
+        , routed by FOSSGIS.{" "}
+        <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+          Fix the map
+        </a>
+      </p>
       {approx && (
-        <p className="mt-4 text-[13px] leading-5 text-ink-2">
+        <p className="mt-2 text-[13px] leading-5 text-ink-2">
           Approximate. The ad gives {listing.location.precision === "street" ? "only the street" : "only the postcode"}, so
           times are measured from its middle.
         </p>

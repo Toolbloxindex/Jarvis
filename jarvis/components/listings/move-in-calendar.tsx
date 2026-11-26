@@ -27,6 +27,11 @@ export interface MoveInCalendarProps {
   months?: 1 | 2;
   /** Last selectable day (YYYY-MM-DD). Default: today + 9 months. */
   maxDate?: string;
+  /**
+   * ± days of flexibility around `value`. The band shows that window (clamped to today).
+   * Omit to show the "available by" band from today up to `value`.
+   */
+  flexDays?: number;
   className?: string;
 }
 
@@ -141,7 +146,8 @@ const CSS = `
 /* ------------------------------------------------------------------ */
 
 /** Band shape behind a cell: none, full width, or only the left half (the selected end). */
-type Band = 0 | 1 | 2;
+/** 0 none, 1 full cell, 2 left half (band ends here), 3 right half (band starts here). */
+type Band = 0 | 1 | 2 | 3;
 
 interface DayCellProps {
   iso: string;
@@ -185,6 +191,7 @@ const DayCell = memo(function DayCell({
         className={cn(
           "hw-cal-band absolute inset-y-0 left-0",
           band === 2 ? "right-1/2" : "right-0",
+          band === 3 && "left-1/2",
           band === 0 ? "bg-transparent" : "bg-subtle",
           roundStart && "rounded-l-full",
           roundEnd && "rounded-r-full",
@@ -253,6 +260,7 @@ export function MoveInCalendar({
   availability,
   months = 2,
   maxDate,
+  flexDays,
   className,
 }: MoveInCalendarProps): JSX.Element {
   const baseId = useId();
@@ -426,13 +434,20 @@ export function MoveInCalendar({
                         let band: Band = 0;
                         let roundStart = false;
                         let roundEnd = false;
-                        if (valueN !== null && valueN > todayN && n >= todayN && n <= valueN) {
+                        const bandFrom =
+                          valueN === null ? null : flexDays === undefined ? todayN : Math.max(todayN, valueN - flexDays);
+                        const bandTo = valueN === null ? null : flexDays === undefined ? valueN : valueN + flexDays;
+                        if (bandFrom !== null && bandTo !== null && bandTo > bandFrom && n >= bandFrom && n <= bandTo) {
+                          const rowStart = ci === 0 || date === 1;
+                          const rowEnd = ci === 6 || n === monthLast;
                           if (n === valueN) {
-                            band = ci === 0 || date === 1 ? 0 : 2;
+                            const before = n > bandFrom && !rowStart;
+                            const after = n < bandTo && !rowEnd;
+                            band = before && after ? 1 : before ? 2 : after ? 3 : 0;
                           } else {
                             band = 1;
-                            roundStart = n === todayN || ci === 0 || date === 1;
-                            roundEnd = ci === 6 || n === monthLast;
+                            roundStart = n === bandFrom || rowStart;
+                            roundEnd = n === bandTo || rowEnd;
                           }
                         }
                         return (

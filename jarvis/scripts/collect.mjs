@@ -1,16 +1,14 @@
-import { runPublicDiscovery } from '../core/discovery.mjs';
-import { databasePath } from '../core/runtime.mjs';
-import { Store } from '../core/store.mjs';
+import { runCollector } from '../core/collector.mjs';
+import { openStore } from '../core/open-store.mjs';
 
 try {
-  const store = new Store(databasePath());
+  const store = await openStore();
   try {
-    const { checked, added, changed } = await runPublicDiscovery(store);
-    console.log(JSON.stringify({ checked, added, changed }));
+    console.log(JSON.stringify(await runCollector(store)));
   } finally {
-    store.close();
+    await store.close();
   }
 } catch {
-  console.error('Collection failed. Check the SQLite path and permissions.');
+  console.error('Collection failed. Check the configured database and collector settings.');
   process.exitCode = 1;
 }

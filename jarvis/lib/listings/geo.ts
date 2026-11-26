@@ -26,6 +26,8 @@ export interface TravelEstimate {
   transit: number | null;
   /** True when the source only gave a street or postcode. */
   approximate: boolean;
+  /** True when the transit time is a rail-based estimate rather than a timetable route. */
+  transitEstimated?: boolean;
 }
 
 export function estimateTravel(

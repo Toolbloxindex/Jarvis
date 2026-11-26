@@ -10,6 +10,7 @@ export async function POST(request: Request) {
   if (!timingSafeEqual(digest(authorization), digest(`Bearer ${token}`))) {
     return Response.json({ error: "Unauthorized." }, { status: 401 });
   }
+  // Expire the tagged feed now and let the next visit refill it.
   revalidateTag("listings", { expire: 0 });
   return Response.json({ revalidated: true });
 }

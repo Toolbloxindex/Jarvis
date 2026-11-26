@@ -40,10 +40,17 @@ export function normalizeKamernetIndex(row){
   if(end_date)evidence.end_date=sourceLabel('available until',end_date);
   if(area_m2!==null)evidence.area_m2=sourceLabel('area',`${area_m2} m²`);
   if(furnished)evidence.furnished=sourceLabel('furnishing',furnished);
+  const postcode=text(row.postalCode).toUpperCase().replace(/^(\d{4})\s*([A-Z]{2})$/,'$1 $2');
+  const lat=row.postalCodeLat,lng=row.postalCodeLong;
+  const location=Number.isFinite(lat)&&Math.abs(lat)<=90&&Number.isFinite(lng)&&Math.abs(lng)<=180&&
+    Math.abs(lat-52)<0.2&&Math.abs(lng-4.36)<0.3
+    ? {lat,lng,precision:'postcode',street:text(row.computedStreetName??row.street),postcode:/^[1-9]\d{3} [A-Z]{2}$/.test(postcode)?postcode:''}
+    : null;
   return {
     rent_advertised_total:rent,rent_base:included===false?rent:null,rent_total:null,
     rent_known_monthly_min:rent,rent_excludes_bills:included===null?null:!included,
     start_date,start_month:null,start_kind:start_date?'earliest':null,end_date,area_m2,furnished,evidence,
+    ...(location ? { location } : {}),
     priceText:rent!==null?`Advertised monthly rent (${priceScope(included).toLowerCase()}): €${rent}`:'',
   };
 }
@@ -145,6 +152,13 @@ export function normalizeKamernetDetail(data,candidate,listing,description){
   patch.evidence=evidence;
   const warn=message=>{if(!patch.extraction_warnings.includes(message))patch.extraction_warnings.push(message);};
   const set=(k,v,quote)=>{patch[k]=v;if(quote)evidence[k]=quote;else delete evidence[k];};
+  if(typeof data.candidatePetsAllowed==='boolean'){
+    if(typeof listing.pets_allowed==='boolean'&&listing.pets_allowed!==data.candidatePetsAllowed){
+      warn('Kamernet and the advertiser’s description disagree on pets.');
+      set('pets_allowed',null);
+    }
+    else set('pets_allowed',data.candidatePetsAllowed,sourceLabel('pets allowed',data.candidatePetsAllowed?'yes':'no'));
+  }
   const retain=(k,v,quote)=>{if(v!==null&&v!==undefined)set(k,v,quote);};
   if(patch.city) evidence.city=sourceLabel('property city',patch.city);
   if(patch.rent_base===null)delete evidence.rent_base;

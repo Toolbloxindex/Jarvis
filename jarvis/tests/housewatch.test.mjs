@@ -226,7 +226,7 @@ test('travel uses only the addressed listing and preserves partial cached routes
     places: [{ kind: 'gym', name: 'Fixture gym', lat: 52.009, lon: 4.37 }],
     expires: Date.parse('2099-01-02'), mapVersion: 2,
   });
-  assert.equal(travelDetail(service.display(listing)).status, 'ready');
+  assert.equal(travelDetail(await service.display(listing)).status, 'ready');
   assert.deepEqual(attempted, []);
   const [first, concurrent] = await Promise.all([service.check(listing, {}), service.check(listing, {})]);
   const result = travelDetail(first);

@@ -1,4 +1,4 @@
-import { parseListingText } from "../../core/matcher.mjs";
+import { APPLICANT_WORDING, parseListingText } from "../../core/matcher.mjs";
 import type { Eligibility, TriState } from "../listings/types";
 
 export interface ApplicantFacts {
@@ -14,13 +14,13 @@ export interface ApplicantFacts {
   extraction_warnings?: string[];
 }
 
-const studentsOnly = /\b(?:students? only|only (?:for )?students?|alleen (?:voor )?studenten|uitsluitend (?:voor )?studenten)\b/i;
+const studentsOnly = APPLICANT_WORDING.studentsOnly;
 const noStudents = /\b(?:no students|students (?:are )?(?:not allowed|not accepted|excluded)|geen studenten)\b/i;
 const singleTenant = /\b(?:single (?:occupancy|tenant)|(?:1|one|één) (?:person|persoon|tenant)\b|(?:max\.?|maximum)\s*(?:of\s*)?(?:1|one|één)\b)\b/i;
-const noCouples = /\b(?:no couples|couples (?:are )?(?:not allowed|not accepted)|geen (?:stellen|koppels)|(?:stellen|koppels) niet toegestaan)\b/i;
-const yesCouples = /\b(?:couples (?:are )?(?:welcome|allowed|accepted)|suitable for couples|geschikt voor (?:stellen|koppels)|(?:stellen|koppels) (?:welkom|toegestaan))\b/i;
-const noPets = /\b(?:no pets|pets (?:are )?(?:not allowed|not accepted|prohibited)|geen huisdieren|huisdieren niet toegestaan)\b/i;
-const yesPets = /\b(?:pet[ -]friendly|pets (?:are )?(?:welcome|allowed|accepted)|huisdieren (?:welkom|toegestaan))\b(?!\s+(?:(?:only )?(?:on|by|with|in)\b|upon\b))/i;
+const noCouples = APPLICANT_WORDING.couplesNo;
+const yesCouples = APPLICANT_WORDING.couplesYes;
+const noPets = APPLICANT_WORDING.petsNo;
+const yesPets = APPLICANT_WORDING.petsYes;
 const degreeGroups = {
   bsc: "(?:bachelor(?:'?s)?|bsc)(?: students?)?",
   msc: "(?:master(?:'?s)?|msc|graduates?)(?: students?)?",
@@ -78,25 +78,31 @@ export function listingEligibility(facts: ApplicantFacts): Eligibility {
   const bsc = explicitAudience(text, degreeGroups.bsc);
   const msc = explicitAudience(text, degreeGroups.msc);
   const phd = explicitAudience(text, degreeGroups.phd);
+  const phdException = APPLICANT_WORDING.phdYes.test(text);
   const professional = explicitAudience(text, degreeGroups.professional);
   const acceptsBachelors = only?.bsc ?? ((!postgrad && studentYes) || bsc === "yes");
   const acceptsMasters = only?.msc ?? (studentYes || postgrad || msc === "yes");
-  const acceptsDoctoral = only?.phd ?? (phd === "yes" || (postgrad && /\b(?:phd|postdoc)\b/i.test(text)));
+  const acceptsDoctoral = only?.phd ?? (phd === "yes" || phdException || (postgrad && /\b(?:phd|postdoc)\b/i.test(text)));
   const acceptsProfessionals = only?.professional ?? (
-    workerOnly || native === "students and working professionals" || occupation.includes("Working") || professional === "yes"
+    workerOnly || native === "students and working professionals" || occupation.includes("Working") || professional === "yes" || APPLICANT_WORDING.workingYes.test(text)
   );
 
+  const textPet = APPLICANT_WORDING.petsYes.test(text) || APPLICANT_WORDING.petsNo.test(text);
+  const textCouple = APPLICANT_WORDING.couplesYes.test(text) || APPLICANT_WORDING.couplesNo.test(text);
+  const structuredPet = typeof facts.pets_allowed === "boolean" && (!textPet || /^(?:Public Kamernet|HousingAnywhere)/i.test(facts.evidence?.pets_allowed ?? ""));
+  const structuredCouple = typeof facts.couples_allowed === "boolean" && !textCouple;
   return {
     tenants: degreeConflict ? { bsc: "unknown", msc: "unknown", phd: "unknown", professional: "unknown" } : {
       bsc: stated(acceptsBachelors, studentNo || postgrad || only?.bsc === false || bsc === "no"),
       msc: stated(acceptsMasters, studentNo || only?.msc === false || msc === "no"),
-      phd: stated(acceptsDoctoral, phd === "no" || (workerOnly && !only?.phd) || only?.phd === false),
+      phd: stated(acceptsDoctoral, phd === "no" || APPLICANT_WORDING.phdNo.test(text) || (workerOnly && !only?.phd && !phdException) || only?.phd === false),
       professional: stated(acceptsProfessionals, onlyStudents || only?.professional === false || professional === "no"),
     },
     couples: stated(facts.couples_allowed === true || yesCouples.test(text), facts.couples_allowed === false || capacity === 1 || singleTenant.test(text) || noCouples.test(text)),
-    pets: stated(facts.pets_allowed === true || yesPets.test(text), facts.pets_allowed === false || noPets.test(text)),
+    pets: facts.extraction_warnings?.some((warning) => /disagree on pets/i.test(warning)) ? "unknown" :
+      stated(facts.pets_allowed === true || yesPets.test(text), facts.pets_allowed === false || noPets.test(text)),
     basis: native || structuredStudents || occupation.includes("Working") || capacity === 1 ||
-      typeof facts.couples_allowed === "boolean" || typeof facts.pets_allowed === "boolean" ? "structured" : "text",
+      structuredCouple || structuredPet ? "structured" : "text",
   };
 }
 
@@ -111,6 +117,7 @@ export function applicantRestrictions(facts: ApplicantFacts) {
     facts.working_only === true ? "Working applicants only" : null,
     facts.student_allowed === false ? "Students excluded" : null,
     facts.source_preferences?.tenants === 1 ? "1 person" : null,
+    /^Public Kamernet pets allowed/i.test(facts.evidence?.pets_allowed ?? "") ? (facts.pets_allowed ? "Pets allowed" : "No pets") : null,
     ...["student_allowed", "working_only", "degree_restriction", "income_requirement", "languages_required", "age_min"]
       .map((key) => facts.evidence?.[key] ?? "")
       .filter((line) => /^(?:HousingAnywhere tenant type:|ROOMMATCH contract type:)/i.test(line)),

@@ -8,7 +8,7 @@ async function travelResponse({ params }: Context, calculate: boolean) {
   const { id } = await params;
   if (!validListingId(id)) return Response.json({ error: "Invalid listing id." }, { status: 400 });
   try {
-    const travel = calculate ? await checkTravel(id) : getTravel(id);
+    const travel = calculate ? await checkTravel(id) : await getTravel(id);
     if (!travel) return Response.json({ error: "Listing not found." }, { status: 404 });
     return Response.json(travel, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

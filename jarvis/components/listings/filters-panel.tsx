@@ -181,12 +181,15 @@ export function FiltersPanel({
   onChange,
   resultCount,
   inSheet = false,
+  universityName = "campus",
 }: {
   filters: Filters;
   onChange: (f: Filters) => void;
   resultCount: number;
   /** In the sheet the title already sits in the sheet header. */
   inSheet?: boolean;
+  /** Short name of the chosen university, for the travel section. */
+  universityName?: string;
 }) {
   const set = <K extends keyof Filters>(key: K, value: Filters[K]) => onChange({ ...filters, [key]: value });
   const active = countActiveFilters(filters);
@@ -197,7 +200,7 @@ export function FiltersPanel({
     <div>
       <div className="flex items-baseline justify-between gap-3 pb-1">
         {inSheet ? (
-          <p className="tabular text-[14px] text-ink-2">{active > 0 ? `${active} filters on` : "No filters on"}</p>
+          <p className="tabular text-[14px] text-ink-2">{active > 0 ? `${active} ${active === 1 ? "filter" : "filters"} on` : "No filters on"}</p>
         ) : (
           <h2 className="text-[19px] font-semibold tracking-[-0.02em]">
             Filters
@@ -229,7 +232,7 @@ export function FiltersPanel({
         </div>
       </Section>
 
-      <Section title="Time to TU Delft" hint="Estimated door to door to TU Delft Aula. Public transport uses timetable data where the source has it.">
+      <Section title={`Time to ${universityName}`} hint="Door to door, routed by bike and on foot. Public transport uses timetable data where the source has it.">
         <Choice label="Travel by" value={filters.commuteMode} options={MODES} onChange={(v) => set("commuteMode", v)} />
         <Row label="At most">
           <Choice

@@ -2,7 +2,17 @@
 
 import { Dialog } from "@base-ui/react/dialog";
 import NumberFlow from "@number-flow/react";
-import { BellIcon, BellRingingIcon, HeartIcon, ListBulletsIcon, MapTrifoldIcon, XIcon } from "@phosphor-icons/react";
+import {
+  ArrowCounterClockwiseIcon,
+  BellIcon,
+  BellRingingIcon,
+  HeartIcon,
+  ListBulletsIcon,
+  MapTrifoldIcon,
+  ThumbsDownIcon,
+  XIcon,
+} from "@phosphor-icons/react";
+import Image from "next/image";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -13,12 +23,15 @@ import { hoverStore } from "@/lib/hover-store";
 import { viewListing, type ListingView } from "@/lib/listings/match";
 import { EMPTY_FILTERS, countActiveFilters, passesFilters, sortViews, type Filters, type SortKey } from "@/lib/listings/query";
 import { median } from "@/lib/listings/scores";
-import type { GeoPoint, Listing, SearchCriteria } from "@/lib/listings/types";
+import { formatEUR } from "@/lib/listings/format";
+import type { Listing, SearchCriteria } from "@/lib/listings/types";
+import { universityById } from "@/lib/universities";
 import { decodeWithin, runTransition } from "@/lib/view-transition";
 import { FiltersPanel } from "./filters-panel";
 import { ListingCard } from "./listing-card";
 import { ListingDetail } from "./listing-detail";
 import { MobileSearch, SearchPill } from "./search";
+import { TriageHint, useTriage } from "./triage";
 import { FiltersTab, MapSwitch, SortMenu } from "./toolbar";
 
 const APP_ROOT_ID = "listings-app";
@@ -46,12 +59,11 @@ const readHomeParam = () => new URLSearchParams(window.location.search).get("hom
 
 interface ListingsExperienceProps {
   listings: Listing[];
-  campus: GeoPoint & { name: string };
   now: string;
   initialSearch: SearchCriteria;
 }
 
-export function ListingsExperience({ listings, campus, now, initialSearch }: ListingsExperienceProps) {
+export function ListingsExperience({ listings, now, initialSearch }: ListingsExperienceProps) {
   const [criteria, setCriteria] = useState(initialSearch);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sort, setSort] = useState<SortKey>("best");
@@ -69,6 +81,9 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
   const [filtersSheet, setFiltersSheet] = useState(false);
   const [mobileMap, setMobileMap] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [passedOpen, setPassedOpen] = useState(false);
+  const [passedBump, setPassedBump] = useState(0);
+  const isMobile = useMediaQuery("(max-width: 1023px)");
 
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const isWide = useMediaQuery("(min-width: 1400px)");
@@ -90,13 +105,15 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
 
   /* ---------------- derived ---------------- */
 
+  const university = useMemo(() => universityById(criteria.university), [criteria.university]);
+  const campus = useMemo(() => ({ ...university, name: `${university.short} · ${university.place}` }), [university]);
   const medianPerM2 = useMemo(
     () => median(listings.map((l) => (l.costs.rent + (l.costs.serviceCosts ?? 0)) / Math.max(1, l.sizeM2))),
     [listings],
   );
   const views = useMemo(
-    () => listings.map((l) => viewListing(l, criteria, campus, now, medianPerM2)),
-    [listings, criteria, campus, now, medianPerM2],
+    () => listings.map((l) => viewListing(l, criteria, university, now, medianPerM2)),
+    [listings, criteria, university, now, medianPerM2],
   );
   const live = useMemo(() => views.filter((v) => !passed.has(v.listing.id)), [views, passed]);
   const filtered = useMemo(
@@ -228,34 +245,86 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
     [listingById],
   );
 
+  const passedStack = useRef<string[]>([]);
+  const unpass = useCallback((id: string) => {
+    passedStack.current = passedStack.current.filter((x) => x !== id);
+    runTransition("results", () =>
+      setPassed((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      }),
+    );
+  }, []);
+
   const pass = useCallback(
     (id: string) => {
       const wasOpen = openIdRef.current === id;
-      runTransition("detail", () => {
+      passedStack.current.push(id);
+      const apply = () => {
         setPassed((prev) => new Set(prev).add(id));
         setSelectedId((s) => (s === id ? null : s));
         if (wasOpen) setOpenId(null);
-      });
+      };
+      if (wasOpen) {
+        runTransition("detail", apply);
+      } else {
+        // The card is tossed into the Passed bin (top right) while the grid closes the gap.
+        // One generated keyframe on the card's snapshot: transform + opacity only.
+        const style = document.createElement("style");
+        const name = `card-${CSS.escape(id)}`;
+        const card = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)?.getBoundingClientRect();
+        const bin = document.getElementById("passed-bin")?.getBoundingClientRect();
+        if (card && bin && bin.width > 0) {
+          const dx = bin.left + bin.width / 2 - (card.left + card.width / 2);
+          const dy = bin.top + bin.height / 2 - (card.top + card.height / 2);
+          const k = `hw-toss-${Date.now()}`;
+          style.textContent = `
+            @keyframes ${k} {
+              0% { transform: none; opacity: 1; }
+              14% { transform: scale(0.95); opacity: 1; }
+              58% { transform: translate(${(dx * 0.5).toFixed(1)}px, ${(dy * 0.42 - 36).toFixed(1)}px) scale(0.36) rotate(-5deg); opacity: 0.95; }
+              100% { transform: translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(0.05) rotate(-10deg); opacity: 0.4; }
+            }
+            ::view-transition-group(${name}) { z-index: 50; }
+            html:root[data-vt="results"]::view-transition-old(${name}):only-child { opacity: 1; animation: ${k} 540ms cubic-bezier(0.45, 0, 0.25, 1) both; transform-origin: 50% 50%; }`;
+        } else {
+          style.textContent = `html:root[data-vt="results"]::view-transition-old(${name}):only-child{opacity:1;animation:hw-discard 260ms cubic-bezier(0.4,0,0.2,1) both}`;
+        }
+        runTransition("results", apply, {
+          before: () => document.head.append(style),
+          done: () => {
+            style.remove();
+            setPassedBump((b) => b + 1);
+          },
+        });
+      }
       if (wasOpen) leaveHomeUrl();
       const title = listingById.get(id)?.title ?? "this home";
       toast(`Passed on ${title}`, {
         id: `pass-${id}`,
-        description: "Only you can see this.",
-        action: {
-          label: "Undo",
-          onClick: () =>
-            runTransition("results", () =>
-              setPassed((prev) => {
-                const next = new Set(prev);
-                next.delete(id);
-                return next;
-              }),
-            ),
-        },
+        description: "Find it again under Passed.",
+        action: { label: "Undo", onClick: () => unpass(id) },
       });
     },
-    [listingById, leaveHomeUrl],
+    [listingById, leaveHomeUrl, unpass],
   );
+
+  const undoLastPass = useCallback(() => {
+    const id = passedStack.current.at(-1);
+    if (!id) return;
+    unpass(id);
+    toast.dismiss(`pass-${id}`);
+    toast(`Brought back ${listingById.get(id)?.title ?? "the home"}`, { id: `unpass-${id}` });
+  }, [unpass, listingById]);
+
+  const triage = useTriage({
+    enabled: !openId && !filtersSheet && !passedOpen,
+    onSave: toggleSave,
+    onPass: pass,
+    onOpen: openDetail,
+    onUndo: undoLastPass,
+  });
 
   const setIndexFor = useCallback((id: string, i: number) => {
     setPhotoIndex((prev) => (prev[id] === i ? prev : { ...prev, [id]: i }));
@@ -270,7 +339,7 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
     animate(() => {
       setFilters(EMPTY_FILTERS);
       setShortlistOnly(false);
-      setCriteria({ moveInBy: null, stayMonths: null, budget: null });
+      setCriteria((c) => ({ university: c.university, moveIn: null, moveInFlexDays: 7, stayMonths: null, stayFlexDays: 30, budget: null }));
     });
 
   /* ---------------- render ---------------- */
@@ -327,6 +396,24 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
               >
                 {alerts ? <BellRingingIcon size={18} weight="fill" /> : <BellIcon size={18} />}
                 <span className="hidden xl:inline">Alerts</span>
+              </button>
+              <button
+                id="passed-bin"
+                type="button"
+                aria-label={passed.size ? `Passed homes, ${passed.size}` : "Passed homes"}
+                onClick={() => setPassedOpen(true)}
+                className="press flex h-11 items-center gap-2 rounded-full px-3.5 text-[14px] font-semibold transition-colors duration-150 hover:bg-hover"
+              >
+                <ThumbsDownIcon size={18} weight={passed.size > 0 ? "fill" : "regular"} />
+                <span className="hidden xl:inline">Passed</span>
+                {passed.size > 0 && (
+                  <span
+                    key={passedBump}
+                    className="hw-pop tabular grid h-5 min-w-5 place-items-center rounded-full bg-ink px-1.5 text-[11px] leading-none text-white"
+                  >
+                    {passed.size}
+                  </span>
+                )}
               </button>
               <button
                 type="button"
@@ -395,7 +482,7 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
               aria-label="Filters"
               className="hw-filters-panel sticky top-[calc(var(--header-h)+var(--toolbar-h))] h-[calc(100dvh-var(--header-h)-var(--toolbar-h))] w-[288px] shrink-0 overflow-y-auto overscroll-contain py-6 pr-2 [scrollbar-width:thin]"
             >
-              <FiltersPanel filters={filters} onChange={changeFilters} resultCount={main.length} />
+              <FiltersPanel filters={filters} onChange={changeFilters} resultCount={main.length} universityName={university.short} />
             </aside>
           )}
 
@@ -475,6 +562,8 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
           </aside>
         </div>
 
+        <TriageHint active={triage.active} help={triage.help} onClose={() => triage.setHelp(false)} />
+
         {/* Mobile map toggle */}
         <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center lg:hidden">
           <button
@@ -512,7 +601,13 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
               </Dialog.Close>
             </div>
             <div className="flex-1 overflow-y-auto overscroll-contain px-5 pt-5 pb-28">
-              <FiltersPanel filters={filters} onChange={(f) => setFilters(f)} resultCount={main.length} inSheet />
+              <FiltersPanel
+                filters={filters}
+                onChange={(f) => setFilters(f)}
+                resultCount={main.length}
+                inSheet
+                universityName={university.short}
+              />
             </div>
             <div className="absolute inset-x-0 bottom-0 border-t border-line-soft bg-white p-4">
               <Dialog.Close className="press flex h-12 w-full items-center justify-center rounded-xl bg-ink text-[16px] font-semibold text-white">
@@ -524,6 +619,21 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
+
+      <PassedSheet
+        open={passedOpen}
+        onOpenChange={setPassedOpen}
+        homes={listings.filter((l) => passed.has(l.id))}
+        views={views}
+        onRestore={(id) => {
+          passedStack.current = passedStack.current.filter((x) => x !== id);
+          unpass(id);
+        }}
+        onRestoreAll={() => {
+          passedStack.current = [];
+          runTransition("results", () => setPassed(new Set()));
+        }}
+      />
 
       {openView && (
         <ListingDetail
@@ -549,13 +659,14 @@ export function ListingsExperience({ listings, campus, now, initialSearch }: Lis
           }
           onClose={closeDetail}
           appRootId={APP_ROOT_ID}
+          university={campus.name}
         />
       )}
 
       <Toaster
-        position="bottom-center"
+        position={isMobile ? "top-center" : "bottom-right"}
         offset={24}
-        mobileOffset={88}
+        mobileOffset={{ top: 156 }}
         gap={8}
         toastOptions={{
           classNames: {
@@ -615,7 +726,11 @@ const CardGrid = memo(function CardGrid({
         return (
           <li
             key={id}
-            className={cn("hw-card", rise && "hw-rise")}
+            data-card-id={id}
+            className={cn(
+              "hw-card",
+              rise && "hw-rise",
+            )}
             style={
               {
                 "--vt-name": `card-${id}`,
@@ -671,5 +786,94 @@ function EmptyState({
         {shortlist ? "Browse all homes" : "Reset search and filters"}
       </button>
     </div>
+  );
+}
+
+function PassedSheet({
+  open,
+  onOpenChange,
+  homes,
+  views,
+  onRestore,
+  onRestoreAll,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  homes: Listing[];
+  views: ListingView[];
+  onRestore: (id: string) => void;
+  onRestoreAll: () => void;
+}) {
+  const totals = new Map(views.map((v) => [v.listing.id, v.total]));
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/30 transition-opacity duration-300 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0" />
+        <Dialog.Popup
+          className={cn(
+            "fixed inset-y-0 right-0 z-50 flex w-full flex-col bg-white outline-none sm:w-[420px] sm:rounded-l-[28px] sm:shadow-[var(--shadow-sheet)]",
+            "transition-[translate] duration-[380ms] ease-[var(--ease-drawer)]",
+            "data-[ending-style]:translate-x-full data-[starting-style]:translate-x-full",
+          )}
+        >
+          <div className="flex h-16 shrink-0 items-center justify-between border-b border-line-soft px-5">
+            <Dialog.Title className="text-[16px] font-semibold">
+              Passed <span className="tabular font-normal text-ink-2">{homes.length || ""}</span>
+            </Dialog.Title>
+            <Dialog.Close
+              aria-label="Close"
+              className="press grid size-9 place-items-center rounded-full transition-colors hover:bg-hover"
+            >
+              <XIcon size={16} weight="bold" />
+            </Dialog.Close>
+          </div>
+          {homes.length === 0 ? (
+            <div className="grid flex-1 place-items-center px-8 text-center">
+              <div>
+                <p className="text-[17px] font-semibold">Nothing passed yet</p>
+                <p className="mt-1 text-[14px] text-ink-2">
+                  Homes you mark &ldquo;Not for me&rdquo; land here, so you can change your mind.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <ul className="flex-1 divide-y divide-line-soft overflow-y-auto overscroll-contain px-5">
+                {homes.map((l) => (
+                  <li key={l.id} className="hw-swap flex items-center gap-3 py-3">
+                    <span className="relative size-14 shrink-0 overflow-hidden rounded-xl bg-hover">
+                      <Image src={l.photos[0].src} alt="" fill sizes="56px" quality={60} className="object-cover" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[14px] font-semibold">{l.title}</span>
+                      <span className="tabular block truncate text-[13px] text-ink-2">
+                        {l.location.neighbourhood} · {formatEUR(totals.get(l.id) ?? l.costs.rent)} month
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onRestore(l.id)}
+                      className="press flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold shadow-[inset_0_0_0_1px_var(--color-line)] transition-shadow hover:shadow-[inset_0_0_0_1px_var(--color-ink)]"
+                    >
+                      <ArrowCounterClockwiseIcon size={14} weight="bold" />
+                      Restore
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <div className="border-t border-line-soft p-4">
+                <button
+                  type="button"
+                  onClick={onRestoreAll}
+                  className="press h-11 w-full rounded-xl text-[15px] font-semibold shadow-[inset_0_0_0_1px_var(--color-ink)]"
+                >
+                  Restore all
+                </button>
+              </div>
+            </>
+          )}
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

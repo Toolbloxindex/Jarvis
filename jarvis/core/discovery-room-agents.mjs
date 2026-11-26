@@ -1,3 +1,4 @@
+import { isImmediateAvailability } from './matcher.mjs';
 const positive = value => typeof value === 'number' && Number.isFinite(value) && value > 0;
 const cents = value => Math.round(value * 100) / 100;
 const isoDay = value => {
@@ -238,13 +239,14 @@ export function applyAgencyTerms(listing, source, options={}) {
   else if (start_date) evidence.start_date=dateAtStart(featureAvailability)
     ? 'Property availability: '+featureAvailability
     : evidenceLine(explicitLine);
-  const start_kind=fixedDate?'fixed':start_date||availability_text?'earliest':null;
+  const immediate=!start_date&&(isImmediateAvailability(availability_text)||(!featureAvailability&&listing.start_kind==='immediate'));
+  const start_kind=fixedDate?'fixed':immediate?'immediate':start_date||availability_text?'earliest':null;
 
   const exactBase=lines.find(line=>/^(?:base rent|kale huur(?:prijs)?)\b/i.test(line)&&currency.test(line));
   const featurePrice=options.price||sourceFeatures.prijs||sourceFeatures.huurprijs;
   const priced=exactBase?.match(currency);
   const featureAmount=typeof featurePrice==='string'?featurePrice.match(currency):null;
-  const partialInclusion=!exactBase&&typeof featurePrice==='string'&&/\bp\.m\.\s*inc\./i.test(featurePrice);
+  const partialInclusion=!exactBase&&typeof featurePrice==='string'&&/\b(?:inc|incl|including|inclusief)\b/i.test(featurePrice);
   const rent_base=partialInclusion?null:((priced||featureAmount)?money((priced||featureAmount)[1]):listing.rent_base??null);
   if (rent_base===null) delete evidence.rent_base;
   else if (priced) evidence.rent_base=evidenceLine(exactBase);

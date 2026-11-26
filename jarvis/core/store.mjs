@@ -2,9 +2,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createHash, randomUUID } from 'node:crypto';
-import {sourceFingerprint,sourceValues,CHECKED_SOURCE_FACTS} from './listing-review.mjs';
-import {evaluateListing,DEFAULT_PROFILE} from './matcher.mjs';
+import { randomUUID } from 'node:crypto';
+import { DEFAULT_PROFILE } from './matcher.mjs';
+import { canonicalUrl, listingIdentity, planListingUpsert, listingUpdate } from './store-listings.mjs';
+
+export { canonicalUrl } from './store-listings.mjs';
 import {facebookOfferKey} from './facebook-terms.mjs';
 
 const now = () => new Date().toISOString();
@@ -34,6 +36,13 @@ export class Store {
       CREATE TABLE IF NOT EXISTS subscriptions(endpoint TEXT PRIMARY KEY,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS notifications(id TEXT PRIMARY KEY,unique_key TEXT UNIQUE NOT NULL,data TEXT NOT NULL,status TEXT NOT NULL,error TEXT,attempts INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY,data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS collector_runs(
+        id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
+        checked INTEGER NOT NULL DEFAULT 0, added INTEGER NOT NULL DEFAULT 0,
+        changed INTEGER NOT NULL DEFAULT 0, error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS collector_runs_finished_at ON collector_runs(finished_at);
+
       CREATE TABLE IF NOT EXISTS listing_history(
         id INTEGER PRIMARY KEY, listing_id TEXT NOT NULL, kind TEXT NOT NULL,
         before_data TEXT NOT NULL, after_data TEXT NOT NULL, changed_at TEXT NOT NULL
@@ -54,19 +63,13 @@ export class Store {
   setConfig(key, value) { this.db.prepare('INSERT INTO config VALUES(?,?) ON CONFLICT(key) DO UPDATE SET data=excluded.data').run(key, JSON.stringify(value)); }
   upsertListing(input) {
     const canonical = input.url ? canonicalUrl(input.url) : '';
-    const identity = input.source_id ? `${input.source}:${input.source_id}` : canonical || `${input.source}:${createHash('sha256').update(`${input.title ?? ''}\n${input.body ?? ''}`).digest('hex')}`;
-    let old = decode(this.db.prepare('SELECT data FROM listings WHERE identity=?').get(identity));
-    // A cross-platform copy must still be reviewed, but is linked to the original application.
-    const fingerprint = sourceFingerprint(input);
-    if (old && (old.fingerprint===fingerprint || sourceFingerprint(sourceValues(old))===fingerprint)) {
-      // Listing photos and routing hints can change independently of housing terms.
-      // Update presentation only: preserve decisions, corrections and AI evidence.
-      const presentation=Object.fromEntries(['photos','photo_version','address'].filter(k=>Object.hasOwn(input,k)).map(k=>[k,input[k]]));
-      const listing=Object.keys(presentation).some(k=>JSON.stringify(presentation[k])!==JSON.stringify(old[k]))?this.updateListing(old.id,presentation):old;
+    const identity = listingIdentity(input, canonical);
+    const old = decode(this.db.prepare('SELECT data FROM listings WHERE identity=?').get(identity));
+    const { data, presentation } = planListingUpsert(input, old, identity, canonical);
+    if (!data) {
+      const listing = presentation ? this.updateListing(old.id, presentation) : old;
       return { listing, isNew: false, isChanged: false };
     }
-    const previous=old?sourceValues(old):{};delete previous.owner_facts;delete previous.owner_review;
-    const data = { ...previous, ...input, ai:old?.ai?.state==='complete'&&old.title===input.title&&old.body===input.body?old.ai:input.ai, owner_facts:null,owner_review:old?.owner_review??null, url: canonical, id: old?.id ?? input.id ?? randomUUID(), identity, fingerprint, created_at: old?.created_at ?? now(), updated_at: now() };
     if (!old) {
       const facebookKey=facebookOfferKey(input);
       const duplicate = (canonical||facebookKey)&&this.getListings().find(l => canonical&&l.url===canonical||facebookKey&&facebookOfferKey(l)===facebookKey);
@@ -76,7 +79,11 @@ export class Store {
     return { listing: data, isNew: !old, isChanged: !!old };
   }
   hasListingsTable() { return !!this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='listings'").get(); }
-  getListings() { return this.hasListingsTable() ? this.db.prepare('SELECT data FROM listings ORDER BY rowid DESC').all().map(decode) : []; }
+  getListings(source) {
+    if (!this.hasListingsTable()) return [];
+    const rows = this.db.prepare('SELECT data FROM listings ORDER BY rowid DESC').all().map(decode);
+    return source === undefined ? rows : rows.filter(row => row.source === source);
+  }
   getListing(id) { return this.hasListingsTable() ? decode(this.db.prepare('SELECT data FROM listings WHERE id=?').get(id)) : null; }
   getListingHistory() {
     if (!this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='listing_history'").get()) return [];
@@ -91,18 +98,7 @@ export class Store {
   }
   updateListing(id, patch, {ownerEdit=false}={}) {
     const old = this.getListing(id); if (!old) return null;
-    let result = { ...old, ...patch, id: old.id, identity: old.identity, updated_at: now() };
-    // Owner corrections are a local layer over original evidence. Repeated feed
-    // refreshes cannot overwrite them; changed evidence invalidates that layer.
-    if(!ownerEdit){
-      const original=sourceValues(old);
-      const changed=CHECKED_SOURCE_FACTS.some(key=>Object.hasOwn(patch,key)&&JSON.stringify(patch[key]??null)!==JSON.stringify(original[key]??null));
-      if(changed){
-        result={...original,...patch,id:old.id,identity:old.identity,updated_at:now(),owner_facts:null,owner_review:Object.hasOwn(patch,'owner_review')?patch.owner_review:old.owner_review??null,ai:null};
-        if(old.ai?.state==='complete'&&result.title===old.title&&result.body===old.body)result.ai=old.ai;
-        result.fingerprint=sourceFingerprint(result);const assessment=evaluateListing(result,this.getConfig('profile',DEFAULT_PROFILE));result.assessment=assessment;result.status=assessment.status;
-      }else if(old.owner_facts?.values){result={...result,...old.owner_facts.values,owner_facts:old.owner_facts};}
-    }else if(patch.owner_facts?.values){result={...result,...patch.owner_facts.values};}
+    const result = listingUpdate(old, patch, ownerEdit, this.getConfig('profile', DEFAULT_PROFILE));
     this.db.prepare('UPDATE listings SET data=? WHERE id=?').run(JSON.stringify(result), id); return result;
   }
   addEvent(kind, detail) { this.db.prepare('INSERT INTO events(kind,data,created_at) VALUES(?,?,?)').run(kind, JSON.stringify(detail), now()); }
@@ -122,8 +118,22 @@ export class Store {
   getGroups() { return this.db.prepare('SELECT data FROM groups ORDER BY rowid').all().map(decode); }
   upsertGroup(group) { const old=decode(this.db.prepare('SELECT data FROM groups WHERE id=?').get(group.id)); this.db.prepare('INSERT INTO groups VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(group.id,JSON.stringify({...old,...group})); }
   updateGroup(id, patch) { const old=this.getGroups().find(g=>g.id===id); if(!old)return null; this.upsertGroup({...old,...patch,id:old.id}); return this.getGroups().find(g=>g.id===id); }
+  startCollectorRun() {
+    const id = randomUUID();
+    this.db.prepare('INSERT INTO collector_runs(id, started_at) VALUES(?,?)').run(id, now());
+    return id;
+  }
+  finishCollectorRun(id, { checked = 0, added = 0, changed = 0, error = null } = {}) {
+    this.db.prepare('UPDATE collector_runs SET finished_at=?,checked=?,added=?,changed=?,error=? WHERE id=?')
+      .run(now(), checked, added, changed, error, id);
+  }
+  latestCollectorRun() {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='collector_runs'").get()) return null;
+    return this.db.prepare('SELECT max(finished_at) AS finished FROM collector_runs').get().finished;
+  }
+  claimTravelCheck(id, at, cooldownMs) {
+    return !!this.db.prepare(`INSERT INTO config(key,data) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET data=excluded.data
+      WHERE CAST(config.data AS INTEGER) <= ?`).run('travel.cooldown.' + id, String(at), at - cooldownMs).changes;
+  }
   close() { this.db.close(); }
-}
-export function canonicalUrl(value) {
-  try { const u=new URL(value); if(!['https:','http:'].includes(u.protocol)||u.username||u.password)return ''; u.hash=''; for(const key of [...u.searchParams.keys()]) if(/^(utm_|fbclid|ref$|source$)/i.test(key))u.searchParams.delete(key); return u.toString().replace(/\/$/,''); } catch { return ''; }
 }

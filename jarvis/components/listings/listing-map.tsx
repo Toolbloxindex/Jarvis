@@ -17,6 +17,7 @@ import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
 import { useIsHovered } from "@/lib/hover-store";
 import { formatEUR } from "@/lib/listings/format";
+import { distanceKm } from "@/lib/listings/geo";
 import type { ListingView } from "@/lib/listings/match";
 import type { GeoPoint, Listing } from "@/lib/listings/types";
 import { KIND_LABEL } from "./listing-card";
@@ -91,6 +92,8 @@ export default function ListingMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibre | null>(null);
   const markersRef = useRef<Record<string, Marker>>({});
+  const campusMarkerRef = useRef<Marker | null>(null);
+  const campusRef = useRef(campus);
   const onSelectRef = useRef(onSelect);
   const onOpenRef = useRef(onOpen);
   const layoutRef = useRef<() => void>(() => {});
@@ -124,7 +127,11 @@ export default function ListingMap({
 
     const bounds = new LngLatBounds();
     for (const l of listings) bounds.extend([l.location.lng, l.location.lat]);
-    bounds.extend([campus.lng, campus.lat]);
+    const start = campusRef.current;
+    // Frame the homes; include the campus only when it's in town (Rotterdam would zoom out to nothing).
+    if (bounds.contains([start.lng, start.lat]) || distanceKm({ lng: bounds.getCenter().lng, lat: bounds.getCenter().lat }, start) < 6) {
+      bounds.extend([start.lng, start.lat]);
+    }
 
     const map = new MapLibre({
       container,
@@ -150,8 +157,9 @@ export default function ListingMap({
         .addTo(map);
     }
     const campusMarker = new Marker({ element: nodes.campus, anchor: "center" })
-      .setLngLat([campus.lng, campus.lat])
+      .setLngLat([start.lng, start.lat])
       .addTo(map);
+    campusMarkerRef.current = campusMarker;
     markersRef.current = markers;
 
     // maplibre only learns the canvas's real size from its ResizeObserver, after `load`, so a
@@ -201,7 +209,13 @@ export default function ListingMap({
       mapRef.current = null;
       markersRef.current = {};
     };
-  }, [listings, campus, nodes]);
+  }, [listings, nodes]);
+
+  // Switching university moves the campus marker; the map itself is never rebuilt.
+  useEffect(() => {
+    campusRef.current = campus;
+    campusMarkerRef.current?.setLngLat([campus.lng, campus.lat]);
+  }, [campus]);
 
   // Collision pass, like Airbnb: price pills that would overlap a more important pill collapse
   // into dots. Priority: selected, open, saved, then list order. Hover never triggers it.
@@ -259,6 +273,15 @@ export default function ListingMap({
     if (dx || dy) map.panBy([dx, dy], { duration: 350, easing: (t) => 1 - Math.pow(1 - t, 3) });
   }, [selectedId]);
 
+  const centre = useMemo(() => {
+    const n = Math.max(1, listings.length);
+    return {
+      lat: listings.reduce((s, l) => s + l.location.lat, 0) / n,
+      lng: listings.reduce((s, l) => s + l.location.lng, 0) / n,
+    };
+  }, [listings]);
+  const campusKm = distanceKm(centre, campus);
+
   const viewById = useMemo(() => new Map(views.map((v, i) => [v.listing.id, { view: v, order: i }])), [views]);
 
   return (
@@ -267,6 +290,17 @@ export default function ListingMap({
         ref={containerRef}
         className={cn("absolute inset-0 transition-opacity duration-500", ready ? "opacity-100" : "opacity-0")}
       />
+
+      {campusKm >= 6 && (
+        <div className="hw-swap absolute top-4 left-4 flex max-w-[70%] items-center gap-2 rounded-full bg-white py-1.5 pr-3.5 pl-1.5 text-[12px] shadow-[var(--shadow-pill)]">
+          <span className="grid size-6 shrink-0 place-items-center rounded-full bg-ink text-white">
+            <GraduationCapIcon size={13} weight="fill" />
+          </span>
+          <span className="truncate">
+            Times to <span className="font-semibold">{campus.name}</span>, {Math.round(campusKm)} km away
+          </span>
+        </div>
+      )}
 
       <div className="absolute top-4 right-4 flex flex-col overflow-hidden rounded-xl bg-white shadow-[var(--shadow-pill)]">
         <button

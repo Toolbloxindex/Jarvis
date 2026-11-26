@@ -6,7 +6,7 @@ import { listings as mockListings } from "../listings/data.ts";
 import type { FlagField, Listing, ListingKind, NearbyPlace } from "../listings/types";
 import type { LiveListing, ListingsResult } from "./listings-data";
 
-type CatalogPlace = Omit<NearbyPlace, "lng"> & { lon: number };
+export type CatalogPlace = Omit<NearbyPlace, "lng"> & { lon: number };
 type SizeMedians = Partial<Record<ListingKind, number>>;
 type SkipReason = "noCoordinates" | "noRent" | "awaitingTravelData" | "noPhotos";
 type ConversionOptions = {
@@ -56,7 +56,7 @@ function medianSizes(listings: Pick<LiveListing, "kind" | "title" | "description
 
 const mockSizes = medianSizes(mockListings);
 
-function catalogRows(value: unknown): CatalogPlace[] {
+export function catalogRows(value: unknown): CatalogPlace[] {
   if (!Array.isArray(value)) return [];
   return value.filter((place): place is CatalogPlace =>
     place && (place.kind === "supermarket" || place.kind === "gym") &&
@@ -147,6 +147,7 @@ export function toUiListing(live: LiveListing, now: string, options: ConversionO
 
   return {
     id, title, description, registration, restrictions, eligibility, features, photos, history, listedAt, transitToAula,
+    ...(live.travelTimes ? { travelTimes: live.travelTimes } : {}),
     kind,
     location: {
       ...address, lat, lng,

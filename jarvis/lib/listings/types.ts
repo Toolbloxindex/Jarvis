@@ -122,6 +122,19 @@ export interface Eligibility {
   basis: "structured" | "text";
 }
 
+export interface RoutedTravel {
+  /** Minutes, door to door. */
+  walk: number;
+  bike: number;
+  /** null = no timetable data or no sensible connection. */
+  transit: number | null;
+  /** Route distance by bike, km. */
+  km: number;
+  /** True when the origin is only a street/postcode, or transit is a rail-based estimate. */
+  approximate: boolean;
+  source: "routed" | "estimated";
+}
+
 export interface Listing {
   id: string;
   kind: ListingKind;
@@ -150,18 +163,32 @@ export interface Listing {
   flags: ReviewFlag[];
   /** ISO datetime of first sighting. */
   listedAt: string;
-  /** Public transport minutes to TU Delft Aula. null = no timetable data. */
+  /** Public transport minutes to TU Delft Aula. null = no timetable data. (Legacy; prefer travelTimes.) */
   transitToAula: number | null;
+  /**
+   * Routed travel per university id (see lib/universities.ts). Present when the travel engine has
+   * calculated it; the UI falls back to a straight-line estimate, marked approximate, otherwise.
+   */
+  travelTimes?: Partial<Record<string, RoutedTravel>>;
   nearestSupermarket: NearbyPlace;
   nearestGym: NearbyPlace;
 }
 
-/** What the person is searching for. */
+/**
+ * What the person is searching for. Students plan around a start date they can't move
+ * (a semester) and an end they roughly know (exchange, degree), so both come with a tolerance.
+ */
 export interface SearchCriteria {
-  /** Latest acceptable move-in date (ISO). null = any. */
-  moveInBy: string | null;
-  /** Planned stay length in months. null = flexible. */
+  /** Where the person studies (lib/universities.ts id). Travel times are measured to it. */
+  university: string;
+  /** Target move-in date (ISO). null = any date. */
+  moveIn: string | null;
+  /** ± days around `moveIn` that still work. */
+  moveInFlexDays: number;
+  /** Planned stay in months. null = no end date (open-ended). */
   stayMonths: number | null;
+  /** How far the contract may end before (fixed term) or run past (minimum stay) the plan, in days. */
+  stayFlexDays: number;
   /** Max monthly total incl. bills. null = any. */
   budget: number | null;
 }

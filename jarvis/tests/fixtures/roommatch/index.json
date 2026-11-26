@@ -1,0 +1,34 @@
+{
+  "_metadata": {
+    "page": 0,
+    "page_count": 1
+  },
+  "data": [
+    {
+      "id": "fixture-offer",
+      "city": {
+        "name": "Delft"
+      },
+      "rentBuy": "Huur",
+      "street": "Voorbeeldstraat",
+      "houseNumber": 10,
+      "postalcode": "2611 BC",
+      "latitude": 52.008,
+      "longitude": 4.351,
+      "infoveld": "Direct aanbod. Deze volledig gemeubileerde woning is beschikbaar vanaf 10 december 2026. Minimaal 1 maand en maximaal 12 maanden.",
+      "infoveldBewoners": "De woning heeft een eigen keuken en badkamer.",
+      "dwellingType": {
+        "name": "Gemeubileerd"
+      },
+      "netRent": 932.93,
+      "totalRent": 1657.64,
+      "serviceCosts": 724.71,
+      "availableFromDate": "2026-12-10T00:00:00",
+      "pictures": [
+        {
+          "uri": "https://www.roommatch.nl/fixture.jpg"
+        }
+      ]
+    }
+  ]
+}

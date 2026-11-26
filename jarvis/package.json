@@ -7,19 +7,22 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "collect": "node scripts/collect.mjs",
+    "collect": "node --experimental-strip-types scripts/collect.mjs",
     "travel": "node --experimental-strip-types scripts/travel.mjs",
-    "test:core": "node --experimental-strip-types --test tests/*.test.mjs"
+    "test:core": "node --experimental-strip-types --test tests/*.test.mjs",
+    "prune": "node scripts/prune.mjs",
+    "verify:sources": "node --experimental-strip-types scripts/verify-sources.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
     "@number-flow/react": "^0.6.2",
     "@phosphor-icons/react": "^2.1.10",
+    "@supabase/supabase-js": "2.105.1",
     "embla-carousel-react": "^8.6.0",
     "maplibre-gl": "^6.19.0",
-    "motion": "^14.14.0",
     "next": "16.4.6",
     "parse5": "8.1.1",
+    "postgres": "4.1.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "sonner": "^2.0.8"

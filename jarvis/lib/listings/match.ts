@@ -1,7 +1,8 @@
-import { formatDay, formatEUR, formatMonths, hoursBetween, isAvailableNow, isOnOrBefore } from "./format";
+import { formatDay, formatEUR, formatMonths, hoursBetween, isAvailableNow } from "./format";
 import { estimateTravel, type TravelEstimate } from "./geo";
 import { overallScore, safetyScore, surroundingsScore, trustScore, type ListingScores } from "./scores";
-import type { Costs, FlagField, GeoPoint, Listing, SearchCriteria } from "./types";
+import type { University } from "../universities";
+import type { Costs, FlagField, Listing, SearchCriteria } from "./types";
 
 export type CheckStatus = "pass" | "fail" | "unknown";
 
@@ -70,21 +71,61 @@ export function checkBudget(listing: Listing, budget: number | null): FitCheck {
   };
 }
 
-export function checkMoveIn(listing: Listing, moveInBy: string | null, now: string): FitCheck {
+const DAY = 86_400_000;
+const AVG_MONTH_DAYS = 30.44;
+const dayNum = (iso: string) => Math.round(new Date(`${iso.slice(0, 10)}T12:00:00Z`).getTime() / DAY);
+const isoOf = (n: number) => new Date(n * DAY).toISOString().slice(0, 10);
+
+/** "3 days", "2 weeks", "about a month", "2 months". */
+export function formatSpan(days: number) {
+  const d = Math.abs(Math.round(days));
+  if (d < 10) return `${d} ${d === 1 ? "day" : "days"}`;
+  if (d < 25) return `${Math.round(d / 7)} weeks`;
+  if (d < 45) return "about a month";
+  return `${Math.round(d / AVG_MONTH_DAYS)} months`;
+}
+
+/** Move-in: a window around the target date. Earlier is negotiable, later is not. */
+export function checkMoveIn(
+  listing: Listing,
+  criteria: Pick<SearchCriteria, "moveIn" | "moveInFlexDays">,
+  now: string,
+): FitCheck {
   const from = listing.tenancy.availableFrom;
   const when = isAvailableNow(from, now) ? "Available now" : `Available from ${formatDay(from, now)}`;
-  if (moveInBy === null || isOnOrBefore(from, moveInBy)) {
-    return { key: "moveIn", status: "pass", label: "Available in time", detail: when };
+  if (criteria.moveIn === null) return { key: "moveIn", status: "pass", label: "Any move-in date", detail: when };
+
+  const target = dayNum(criteria.moveIn);
+  const flex = criteria.moveInFlexDays;
+  const lo = Math.max(dayNum(now), target - flex);
+  const hi = target + flex;
+  const a = dayNum(from);
+  const windowText = flex === 0 ? formatDay(criteria.moveIn, now) : `${formatDay(isoOf(lo), now)} to ${formatDay(isoOf(hi), now)}`;
+
+  if (a > hi) {
+    return {
+      key: "moveIn",
+      status: "fail",
+      label: "Available too late",
+      detail: `${when}, ${formatSpan(a - target)} after you want to move in`,
+    };
+  }
+  if (a >= lo) {
+    return { key: "moveIn", status: "pass", label: "Available in your window", detail: `${when} (you: ${windowText})` };
   }
   return {
     key: "moveIn",
-    status: "fail",
-    label: "Available later",
-    detail: `${when}, after your ${formatDay(moveInBy, now)} move-in`,
+    status: "unknown",
+    label: "Available earlier",
+    detail: `${when}, ${formatSpan(target - a)} before you need it. Ask if it can start later.`,
   };
 }
 
-export function checkStay(listing: Listing, stayMonths: number | null): FitCheck {
+/** Stay: does the contract cover the planned stay, within the tolerance? */
+export function checkStay(
+  listing: Listing,
+  criteria: Pick<SearchCriteria, "stayMonths" | "stayFlexDays">,
+): FitCheck {
   const { minMonths, maxMonths } = listing.tenancy;
   const describe =
     maxMonths === "indefinite"
@@ -100,43 +141,98 @@ export function checkStay(listing: Listing, stayMonths: number | null): FitCheck
   if (minMonths === null && maxMonths === null) {
     return { key: "stay", status: "unknown", label: "Contract length not stated", detail: describe };
   }
-  if (stayMonths !== null && typeof maxMonths === "number" && maxMonths < stayMonths) {
-    return {
-      key: "stay",
-      status: "fail",
-      label: "Contract too short",
-      detail: `Ends after ${formatMonths(maxMonths)}, you need ${formatMonths(stayMonths)}`,
-    };
+  const { stayMonths, stayFlexDays: flex } = criteria;
+  if (stayMonths === null) {
+    // No end date: open-ended contracts fit; a fixed term means moving again.
+    if (typeof maxMonths === "number") {
+      return {
+        key: "stay",
+        status: "unknown",
+        label: "Fixed term",
+        detail: `Ends after ${formatMonths(maxMonths)}, and you have no end date`,
+      };
+    }
+    return { key: "stay", status: "pass", label: "Open-ended fits", detail: describe };
   }
-  if (stayMonths !== null && minMonths !== null && minMonths > stayMonths) {
-    return {
-      key: "stay",
-      status: "fail",
-      label: "Minimum stay too long",
-      detail: `Minimum ${formatMonths(minMonths)}, you need ${formatMonths(stayMonths)}`,
-    };
+
+  const need = stayMonths * AVG_MONTH_DAYS;
+  if (typeof maxMonths === "number") {
+    const short = need - maxMonths * AVG_MONTH_DAYS;
+    if (short > flex + 1) {
+      return {
+        key: "stay",
+        status: "fail",
+        label: "Contract too short",
+        detail: `Ends after ${formatMonths(maxMonths)}, you plan ${formatMonths(stayMonths)}`,
+      };
+    }
+    if (short > 1) {
+      return {
+        key: "stay",
+        status: "unknown",
+        label: "Ends a little early",
+        detail: `Fixed term ends ${formatSpan(short)} before you'd leave`,
+      };
+    }
+  }
+  if (minMonths !== null) {
+    const extra = minMonths * AVG_MONTH_DAYS - need;
+    if (extra > flex + 1) {
+      return {
+        key: "stay",
+        status: "fail",
+        label: "Minimum stay too long",
+        detail: `Minimum ${formatMonths(minMonths)}, you plan ${formatMonths(stayMonths)}`,
+      };
+    }
+    if (extra > 1) {
+      return {
+        key: "stay",
+        status: "unknown",
+        label: "Minimum a little longer",
+        detail: `Minimum stay is ${formatSpan(extra)} more than you plan`,
+      };
+    }
   }
   return { key: "stay", status: "pass", label: "Stay length fits", detail: describe };
+}
+
+export function travelFor(listing: Listing, university: University): TravelEstimate {
+  const routed = listing.travelTimes?.[university.id];
+  if (routed) {
+    return {
+      km: routed.km,
+      walk: routed.walk,
+      bike: routed.bike,
+      transit: routed.transit,
+      // The origin's precision decides "≈" on every mode; an estimated transit time only on transit.
+      approximate: listing.location.precision !== "exact",
+      transitEstimated: routed.source === "estimated" || (routed.approximate && routed.transit !== null),
+    };
+  }
+  // No routed data yet: a straight-line estimate, always shown as approximate.
+  const estimate = estimateTravel(listing.location, university, university.id === "tud" ? listing.transitToAula : null);
+  return { ...estimate, approximate: true };
 }
 
 export function viewListing(
   listing: Listing,
   criteria: SearchCriteria,
-  campus: GeoPoint,
+  university: University,
   now: string,
   medianPerM2: number,
 ): ListingView {
   const { total, complete } = monthlyTotal(listing.costs);
   const checks = [
     checkBudget(listing, criteria.budget),
-    checkMoveIn(listing, criteria.moveInBy, now),
-    checkStay(listing, criteria.stayMonths),
+    checkMoveIn(listing, criteria, now),
+    checkStay(listing, criteria),
   ];
 
   const unclear = new Set<FlagField>(listing.flags.map((f) => f.field));
   for (const check of checks) {
     if (check.status !== "unknown") continue;
-    unclear.add(check.key === "budget" ? "bills" : "tenancy");
+    unclear.add(check.key === "budget" ? "bills" : check.key === "moveIn" ? "availability" : "tenancy");
   }
 
   const status: MatchStatus = checks.some((c) => c.status === "fail")
@@ -145,7 +241,7 @@ export function viewListing(
       ? "confirm"
       : "match";
 
-  const travel = estimateTravel(listing.location, campus, listing.transitToAula);
+  const travel = travelFor(listing, university);
   const parts = {
     trust: trustScore(listing, now),
     safety: safetyScore(listing),

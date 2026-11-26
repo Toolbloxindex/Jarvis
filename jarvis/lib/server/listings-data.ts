@@ -2,8 +2,8 @@ import { SOURCES } from "../../core/discovery.mjs";
 import { applyEvidenceBackedFacts } from "../../core/matcher.mjs";
 import { normalizePhotos } from "../../core/photos.mjs";
 import { openExistingStore } from "../../core/runtime.mjs";
-import { canonicalUrl } from "../../core/store.mjs";
-import { createTravelService, listingAddress } from "../../core/travel.mjs";
+import { canonicalUrl } from "../../core/store-listings.mjs";
+import { travelDisplay, listingAddress } from "../../core/travel.mjs";
 import { listings as mockListings } from "../listings/data.ts";
 import type {
   Costs, FlagField, Furnishing, HistoryEvent, Listing, ListingKind, ListingLocation, ListingSource,
@@ -29,20 +29,21 @@ export type LiveListing = Nullable<Omit<Listing, "location" | "costs" | "tenancy
 
 export type ListingsResult =
   | { listings: LiveListing[]; source: "live"; updatedAt: string | null }
-  | { listings: Listing[]; source: "mock"; updatedAt: null };
+  | { listings: Listing[]; source: "mock"; updatedAt: string | null };
 
 interface Snapshot {
   rent_advertised_total?: number | null;
   rent_base?: number | null;
   rent_total?: number | null;
   start_date?: string | null;
+  start_kind?: string | null;
   start_month?: string | null;
   end_date?: string | null;
   availability?: string | null;
   availability_periods?: { start?: string | null; end?: string | null }[] | null;
 }
 
-interface StoredListing extends ApplicantFacts, Snapshot {
+export interface StoredListing extends ApplicantFacts, Snapshot {
   id: string;
   source: string;
   url?: string | null;
@@ -86,7 +87,7 @@ interface StoredListing extends ApplicantFacts, Snapshot {
   property_details_checked?: boolean;
 }
 
-type Change = { listingId: string; kind: "price" | "availability"; before: Snapshot; after: Snapshot; changedAt: string };
+export type Change = { listingId: string; kind: "price" | "availability"; before: Snapshot; after: Snapshot; changedAt: string };
 
 const money = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
 const trim = (value?: string | null) => value?.trim() ?? "";
@@ -121,10 +122,13 @@ function rentParts(row: StoredListing): LiveListing["costs"] {
     else if (utilityPattern.test(label)) utilities = (utilities ?? 0) + cost;
     else serviceCosts = (serviceCosts ?? 0) + cost;
   }
-  const deposit = typeof row.deposit === "string" && /^\d+(?:[.,]\d{1,2})?$/.test(row.deposit.trim()) ?
-    amount(Number(row.deposit.replace(",", "."))) : amount(row.deposit);
+  const base = amount(row.rent_base);
+  const depositMonths = typeof row.deposit === "string" ? row.deposit.match(/^(\d+) months? of rent$/i) : null;
+  const deposit = depositMonths && base !== null ? Math.round(base * Number(depositMonths[1]) * 100) / 100 :
+    typeof row.deposit === "string" && /^\d+(?:[.,]\d{1,2})?$/.test(row.deposit.trim()) ?
+      amount(Number(row.deposit.replace(",", "."))) : amount(row.deposit);
   return {
-    rent: amount(row.rent_base),
+    rent: base,
     serviceCosts,
     utilities,
     billsIncluded: typeof row.rent_excludes_bills === "boolean" ? !row.rent_excludes_bills : null,
@@ -147,7 +151,7 @@ function exactMonths(start: string | null, end: string | null) {
 }
 
 function tenancy(row: StoredListing): LiveListing["tenancy"] {
-  const start = availableFrom(row);
+  const start = availableFrom(row) ?? (row.start_kind === "immediate" ? day(row.created_at) : null);
   const duration = exactMonths(day(row.start_date), day(row.end_date));
   return {
     availableFrom: start,
@@ -172,7 +176,7 @@ function listingLocation(row: StoredListing, display: TravelDisplay): LiveListin
     lat: positioned ? lat : null,
     lng: positioned ? lng : null,
     precision,
-    street: trim(source?.street ?? input?.street),
+    street: trim(source?.street || input?.street),
     ...(houseNumber ? { houseNumber } : {}),
     postcode,
     neighbourhood: trim(source?.neighbourhood ?? row.neighbourhood),
@@ -366,69 +370,78 @@ export function hasDelftListings(rows: unknown[]) {
   return (rows as StoredListing[]).some(isDelftListing);
 }
 
+export function mapStoredListings(
+  stored: StoredListing[], changes: Change[], readTravel: (row: StoredListing) => TravelDisplay,
+  updatedAt: string | null,
+): ListingsResult {
+  const rows = stored.filter(isDelftListing);
+  if (!rows.length) return { listings: mockListings, source: "mock", updatedAt };
+  const changesById = new Map<string, Change[]>();
+  for (const change of changes) {
+    const changes = changesById.get(change.listingId) ?? [];
+    changes.push(change);
+    changesById.set(change.listingId, changes);
+  }
+  const listings = groupListings(rows).map((storedGroup): LiveListing => {
+    const group = storedGroup.map((row) => applyEvidenceBackedFacts(row) as StoredListing);
+    const row = group[0];
+    const display = readTravel(row);
+    const detail = travelDetail(display);
+    const location = listingLocation(row, display);
+    const kind = listingKind(row);
+    const allChanges = group.flatMap((item) => changesById.get(item.id) ?? [])
+      .sort((a, b) => a.changedAt.localeCompare(b.changedAt));
+    const { history, previousRent } = historyFor(group, allChanges);
+    const costs = rentParts(row);
+    if (costs.rent !== null && previousRent !== null && previousRent > costs.rent) costs.previousRent = previousRent;
+    const duration = tenancy(row);
+    const registration = triState(row.registration);
+    const eligibility = listingEligibility(row);
+    const photos = group.flatMap((item) => normalizePhotos(item.source, item.photos, item.url ?? undefined))
+      .filter((photo, index, all) => index === all.findIndex((item) => item.url === photo.url))
+      .map((photo, index) => ({ src: photo.url, alt: `Property photo ${index + 1}` }));
+    const features = [...row.features ?? [], ...(row.energy_label ? [`Energy label ${row.energy_label}`] : [])];
+    const { nearestSupermarket, nearestGym } = detail;
+    return {
+      id: row.id,
+      kind,
+      title: location.street || trim(row.title) || "Delft rental",
+      description: trim(row.body),
+      location,
+      sizeM2: amount(row.area_m2),
+      bedrooms: kind === "studio" || kind === "room" ? 1 : amount(row.bedrooms),
+      furnishing: furnishing(row),
+      costs,
+      advertisedRent: quote(row),
+      tenancy: duration,
+      availability: row.availability ?? null,
+      registration,
+      restrictions: applicantRestrictions(row),
+      eligibility,
+      features,
+      photos,
+      sources: group.map(sourceFor),
+      history,
+      flags: reviewFlags(group, { costs, tenancy: duration, location, registration, eligibility }),
+      listedAt: row.created_at,
+      transitToAula: detail.aula.transit,
+      ...(detail.travelTimes ? { travelTimes: detail.travelTimes } : {}),
+      ...(nearestSupermarket ? { nearestSupermarket: { kind: nearestSupermarket.kind, name: nearestSupermarket.name, lat: nearestSupermarket.lat, lng: nearestSupermarket.lng } } : {}),
+      ...(nearestGym ? { nearestGym: { kind: nearestGym.kind, name: nearestGym.name, lat: nearestGym.lat, lng: nearestGym.lng } } : {}),
+    };
+  });
+  return { listings, source: "live", updatedAt };
+}
+
 export function readListings(path: string): ListingsResult {
-  const fallback = { listings: mockListings, source: "mock", updatedAt: null } as const;
   const store = openExistingStore(path);
-  if (!store) return fallback;
+  if (!store) return { listings: mockListings, source: "mock", updatedAt: null };
   try {
     store.db.exec("BEGIN");
     const rows = (store.getListings() as StoredListing[]).filter(isDelftListing);
-    if (rows.length === 0) return fallback;
-    const changesById = new Map<string, Change[]>();
-    for (const change of store.getListingHistory() as Change[]) {
-      const changes = changesById.get(change.listingId) ?? [];
-      changes.push(change);
-      changesById.set(change.listingId, changes);
-    }
-    const travel = createTravelService(store);
-    const listings = groupListings(rows).map((storedGroup): LiveListing => {
-      const group = storedGroup.map((row) => applyEvidenceBackedFacts(row) as StoredListing);
-      const row = group[0];
-      const display: TravelDisplay = travel.display(row);
-      const detail = travelDetail(display);
-      const location = listingLocation(row, display);
-      const kind = listingKind(row);
-      const allChanges = group.flatMap((item) => changesById.get(item.id) ?? [])
-        .sort((a, b) => a.changedAt.localeCompare(b.changedAt));
-      const { history, previousRent } = historyFor(group, allChanges);
-      const costs = rentParts(row);
-      if (costs.rent !== null && previousRent !== null && previousRent > costs.rent) costs.previousRent = previousRent;
-      const duration = tenancy(row);
-      const registration = triState(row.registration);
-      const eligibility = listingEligibility(row);
-      const photos = group.flatMap((item) => normalizePhotos(item.source, item.photos, item.url ?? undefined))
-        .filter((photo, index, all) => index === all.findIndex((item) => item.url === photo.url))
-        .map((photo, index) => ({ src: photo.url, alt: `Property photo ${index + 1}` }));
-      const features = [...row.features ?? [], ...(row.energy_label ? [`Energy label ${row.energy_label}`] : [])];
-      const { nearestSupermarket, nearestGym } = detail;
-      return {
-        id: row.id,
-        kind,
-        title: location.street || trim(row.title) || "Delft rental",
-        description: trim(row.body),
-        location,
-        sizeM2: amount(row.area_m2),
-        bedrooms: kind === "studio" || kind === "room" ? 1 : amount(row.bedrooms),
-        furnishing: furnishing(row),
-        costs,
-        advertisedRent: quote(row),
-        tenancy: duration,
-        availability: row.availability ?? null,
-        registration,
-        restrictions: applicantRestrictions(row),
-        eligibility,
-        features,
-        photos,
-        sources: group.map(sourceFor),
-        history,
-        flags: reviewFlags(group, { costs, tenancy: duration, location, registration, eligibility }),
-        listedAt: row.created_at,
-        transitToAula: detail.aula.transit,
-        ...(nearestSupermarket ? { nearestSupermarket: { kind: nearestSupermarket.kind, name: nearestSupermarket.name, lat: nearestSupermarket.lat, lng: nearestSupermarket.lng } } : {}),
-        ...(nearestGym ? { nearestGym: { kind: nearestGym.kind, name: nearestGym.name, lat: nearestGym.lat, lng: nearestGym.lng } } : {}),
-      };
-    });
-    return { listings, source: "live", updatedAt: latest(rows.flatMap((row) => [row.last_seen_at, row.updated_at])) };
+    const updatedAt = store.latestCollectorRun() ?? latest(rows.flatMap((row) => [row.last_seen_at, row.updated_at]));
+    return mapStoredListings(rows, store.getListingHistory() as Change[],
+      (row) => travelDisplay(row, store.getConfig('travel.listing.' + row.id)), updatedAt);
   } finally {
     store.close();
   }

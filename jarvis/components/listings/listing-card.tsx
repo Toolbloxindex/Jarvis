@@ -226,6 +226,13 @@ export const ListingCard = memo(function ListingCard({
     >
       <PhotoFrame listing={listing} index={photoIndex} onIndexChange={setIndex} onOpen={open} priority={priority} />
 
+      {/* Saving: a heart blooms on the photo once, then gets out of the way. */}
+      {saved && (
+        <span aria-hidden="true" className="hw-burst pointer-events-none absolute inset-x-0 top-0 grid aspect-[20/19] place-items-center">
+          <HeartIcon size={72} weight="fill" className="text-white drop-shadow-[0_4px_16px_rgb(0_0_0/0.35)]" />
+        </span>
+      )}
+
       {badge && (
         <span
           className={cn(
@@ -253,7 +260,7 @@ export const ListingCard = memo(function ListingCard({
             <button
               type="button"
               onClick={open}
-              className="text-left outline-offset-4 after:absolute after:inset-0 after:content-['']"
+              className="text-left outline-none after:absolute after:inset-0 after:content-['']"
             >
               {KIND_LABEL[listing.kind]} in {listing.location.neighbourhood}
             </button>
