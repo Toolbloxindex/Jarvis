@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { ListingsExperience } from "@/components/listings/listings-experience";
-import { DEFAULT_SEARCH, MOCK_NOW } from "@/lib/listings/data";
-import { getUiFeed } from "@/lib/server/listings-repo";
+import { DEFAULT_SEARCH } from "@/lib/listings/defaults";
+import { getLivePage } from "@/lib/server/listings-repo";
 
 export const metadata: Metadata = {
   title: "Homes in Delft · Housewatch",
@@ -9,11 +9,13 @@ export const metadata: Metadata = {
 };
 
 export default async function ListingsPage() {
-  const { listings } = await getUiFeed(MOCK_NOW);
+  const page = await getLivePage();
   return (
     <ListingsExperience
-      listings={listings}
-      now={MOCK_NOW}
+      listings={page.listings}
+      now={page.now}
+      updatedAt={page.updatedAt}
+      collecting={page.collecting}
       initialSearch={DEFAULT_SEARCH}
     />
   );

@@ -33,3 +33,32 @@ export async function getUiFeed(now: string): Promise<UiFeed> {
   cacheLife({ stale: 300, revalidate: 300, expire: 3600 });
   return toUiFeed(await getListings(), now, () => readUiAmenities(databasePath()));
 }
+
+export interface LivePage {
+  listings: UiFeed["listings"];
+  /** When this feed snapshot was rendered; the UI's "today". */
+  now: string;
+  /** Latest collector change, or null before the first collection. */
+  updatedAt: string | null;
+  /** True while there is no real data yet (production never shows mock homes). */
+  collecting: boolean;
+}
+
+/**
+ * The production feed. The snapshot is cached and refreshed on demand after each collector run,
+ * so "now" is stamped inside the cache scope (Cache Components forbid an uncached clock). In
+ * Supabase mode the mock homes are never shown: an empty database means "collecting".
+ */
+export async function getLivePage(): Promise<LivePage> {
+  "use cache";
+  cacheTag("listings");
+  const live = storeKind() === "supabase";
+  if (live) cacheLife("hours");
+  else cacheLife({ stale: 300, revalidate: 300, expire: 3600 });
+  const now = new Date().toISOString();
+  const feed = await getUiFeed(now);
+  if (live && feed.source !== "live") {
+    return { listings: [], now, updatedAt: feed.updatedAt, collecting: true };
+  }
+  return { listings: feed.listings, now, updatedAt: feed.updatedAt, collecting: feed.listings.length === 0 };
+}

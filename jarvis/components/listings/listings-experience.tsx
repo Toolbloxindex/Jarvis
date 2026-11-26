@@ -18,6 +18,7 @@ import { Toaster, toast } from "sonner";
 import { Logo } from "@/components/brand/logo";
 import { cn } from "@/lib/cn";
 import { hoverStore } from "@/lib/hover-store";
+import { formatRelative } from "@/lib/listings/format";
 import { viewListing, type ListingView } from "@/lib/listings/match";
 import { EMPTY_FILTERS, countActiveFilters, passesFilters, sortViews, type Filters, type SortKey } from "@/lib/listings/query";
 import { median } from "@/lib/listings/scores";
@@ -59,9 +60,19 @@ interface ListingsExperienceProps {
   listings: Listing[];
   now: string;
   initialSearch: SearchCriteria;
+  /** Latest collector change (ISO), or null before the first collection. */
+  updatedAt?: string | null;
+  /** No real data yet: the first collection is still running. */
+  collecting?: boolean;
 }
 
-export function ListingsExperience({ listings, now, initialSearch }: ListingsExperienceProps) {
+export function ListingsExperience({
+  listings,
+  now,
+  initialSearch,
+  updatedAt = null,
+  collecting = false,
+}: ListingsExperienceProps) {
   const [criteria, setCriteria] = useState(initialSearch);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sort, setSort] = useState<SortKey>("best");
@@ -393,6 +404,7 @@ export function ListingsExperience({ listings, now, initialSearch }: ListingsExp
 
   /* ---------------- render ---------------- */
 
+  const freshness = updatedAt ? `Updated ${formatRelative(updatedAt, now)}` : null;
   const resultSummary =
     view === "saved"
       ? "Private to you. Saving never contacts the advertiser."
@@ -503,7 +515,10 @@ export function ListingsExperience({ listings, now, initialSearch }: ListingsExp
                   </>
                 )}
               </h1>
-              <p className="hidden truncate text-[13px] text-ink-2 sm:block">{resultSummary}</p>
+              <p className="hidden truncate text-[13px] text-ink-2 sm:block">
+                {resultSummary}
+                {freshness && view === "all" ? ` · ${freshness}` : ""}
+              </p>
             </div>
             <SortMenu value={sort} onChange={(s) => animate(() => setSort(s))} />
             <div className="hidden lg:block">
@@ -532,6 +547,7 @@ export function ListingsExperience({ listings, now, initialSearch }: ListingsExp
           <main className="min-w-0 flex-1 pt-6 pb-24">
             {main.length === 0 ? (
               <EmptyState
+                collecting={collecting && view === "all"}
                 view={view}
                 hasFilters={activeFilters > 0}
                 onReset={resetAll}
@@ -808,11 +824,13 @@ const CardGrid = memo(function CardGrid({
 });
 
 function EmptyState({
+  collecting,
   view,
   hasFilters,
   onReset,
   onBack,
 }: {
+  collecting?: boolean;
   view: "all" | "saved" | "passed";
   hasFilters: boolean;
   onReset: () => void;
@@ -826,6 +844,17 @@ function EmptyState({
       hasFilters ? "Try removing a filter, or widen your budget or dates." : "Try a wider budget or later dates.",
     ],
   }[view];
+  if (collecting) {
+    return (
+      <div className="hw-swap rounded-[24px] bg-subtle px-8 py-14 text-center">
+        <p className="text-[19px] font-semibold tracking-[-0.02em]">Collecting the first homes</p>
+        <p className="mx-auto mt-1.5 max-w-[44ch] text-[15px] text-ink-2">
+          Housewatch is reading Kamernet, HousingAnywhere, DUWO and local agents for the first time. New homes appear here
+          within about 15 minutes; this page updates on its own after each pass.
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="hw-swap rounded-[24px] bg-subtle px-8 py-14 text-center">
       <p className="text-[19px] font-semibold tracking-[-0.02em]">{copy[0]}</p>

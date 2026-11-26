@@ -8,7 +8,12 @@ try {
   } finally {
     await store.close();
   }
-} catch {
-  console.error('Collection failed. Check the configured database and collector settings.');
+} catch (error) {
+  // Public logs: say what failed, never print credentials (connection strings, tokens).
+  const safe = String(error?.stack ?? error)
+    .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, 'postgresql://***')
+    .replace(/(token|key|password|secret)=([^&\s]+)/gi, '$1=***')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer ***');
+  console.error('Collection failed:', safe.split('\n').slice(0, 8).join('\n'));
   process.exitCode = 1;
 }

@@ -128,6 +128,8 @@ export default function ListingMap({
     const bounds = new LngLatBounds();
     for (const l of listings) bounds.extend([l.location.lng, l.location.lat]);
     const start = campusRef.current;
+    // No homes yet (first collection): frame the campus itself.
+    if (!listings.length) bounds.extend([start.lng - 0.03, start.lat - 0.02]).extend([start.lng + 0.03, start.lat + 0.02]);
     // Frame the homes; include the campus only when it's in town (Rotterdam would zoom out to nothing).
     if (bounds.contains([start.lng, start.lat]) || distanceKm({ lng: bounds.getCenter().lng, lat: bounds.getCenter().lat }, start) < 6) {
       bounds.extend([start.lng, start.lat]);
@@ -227,6 +229,7 @@ export default function ListingMap({
     const bounds = new LngLatBounds();
     for (const l of listings) bounds.extend([l.location.lng, l.location.lat]);
     bounds.extend([campus.lng, campus.lat]);
+    if (!listings.length) bounds.extend([campus.lng + 0.03, campus.lat + 0.02]).extend([campus.lng - 0.03, campus.lat - 0.02]);
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     map.fitBounds(bounds, { padding: FIT_PADDING, duration: reduce ? 0 : 900, maxZoom: 14.5, essential: false });
   }, [campus, listings]);
@@ -288,7 +291,8 @@ export default function ListingMap({
   }, [selectedId]);
 
   const centre = useMemo(() => {
-    const n = Math.max(1, listings.length);
+    if (!listings.length) return { lat: 52.0116, lng: 4.3571 }; // Delft centre
+    const n = listings.length;
     return {
       lat: listings.reduce((s, l) => s + l.location.lat, 0) / n,
       lng: listings.reduce((s, l) => s + l.location.lng, 0) / n,
