@@ -2,8 +2,9 @@ name: Housewatch collector
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
-    - cron: '0 3 * * *'
+    # Off-peak minutes: GitHub delays or drops scheduled runs at :00/:15/:30/:45 under load.
+    - cron: '7,22,37,52 * * * *'
+    - cron: '41 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -19,7 +20,7 @@ defaults:
 
 jobs:
   collect:
-    if: github.event.schedule != '0 3 * * *'
+    if: github.event.schedule != '41 3 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -47,7 +48,7 @@ jobs:
           HOUSEWATCH_AI_APPLY: ${{ vars.HOUSEWATCH_AI_APPLY || '0' }}
 
   prune:
-    if: github.event.schedule == '0 3 * * *'
+    if: github.event.schedule == '41 3 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
