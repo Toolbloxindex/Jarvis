@@ -6,10 +6,10 @@
  *  - Unsplash resizes on its own CDN;
  *  - everything else goes through wsrv.nl (free, open-source image CDN): exact width, WebP, and
  *    `default=` redirects to the original if the source refuses the proxy, so nothing breaks;
- *  - hosts known to block the proxy are served directly.
+ *  - hosts that block wsrv go through WordPress.com's free image CDN (Photon, i0.wp.com) instead.
  * No Next.js optimizer, so no Vercel CPU or image quota is spent.
  */
-const DIRECT_HOSTS = new Set(["www.roommatch.nl", "roommatch.nl"]);
+const PHOTON_HOSTS = new Set(["www.roommatch.nl", "roommatch.nl"]);
 
 export default function imageLoader({ src, width, quality }: { src: string; width: number; quality?: number }) {
   if (src.startsWith("https://images.unsplash.com/")) {
@@ -26,7 +26,11 @@ export default function imageLoader({ src, width, quality }: { src: string; widt
   } catch {
     return src; // relative or malformed: leave alone
   }
-  if (DIRECT_HOSTS.has(host) || !/^https?:/.test(src)) return src;
+  if (!/^https?:/.test(src)) return src;
   const q = quality ?? 72;
+  if (PHOTON_HOSTS.has(host) && src.startsWith("https://")) {
+    const url = new URL(src);
+    return `https://i0.wp.com/${url.host}${url.pathname}?w=${width}&quality=${q}&strip=all`;
+  }
   return `https://wsrv.nl/?url=${encodeURIComponent(src)}&w=${width}&q=${q}&output=webp&we&default=${encodeURIComponent(src)}`;
 }
