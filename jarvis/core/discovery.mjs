@@ -312,7 +312,7 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
       priority:!row?.property_details_checked?0:check.stamp!==stamp?1:2, lastAttempt:Date.parse(check.at)||0};
    };
    const candidates=(await Promise.all([...found.values()].map(depth))).sort((a,b)=>a.priority-b.priority||a.lastAttempt-b.lastAttempt);
-   let detailsPending=0,newPending=0,added=0;const limit=source.detailLimit??detailLimit;const newLimit=source.newLimit??150;
+   let detailsPending=0,newPending=0,added=0;const limit=source.detailLimit??detailLimit;const newLimit=source.newLimit??80;
    for(const {c,row:old,stamp,fresh,changedStamp,retryLater} of candidates){
     const seenAt=new Date(now).toISOString();
     const visible={last_seen_at:seenAt,availability:'available',contact_policy:source.contact,contact_access:c.contactFree===true?'explicitly_free':'unverified'};

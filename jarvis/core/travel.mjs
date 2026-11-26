@@ -169,19 +169,18 @@ async function loadPlaces(fetcher,localFile,city) {
   const west=(city.lng-CATALOG_HALF.lon).toFixed(4), east=(city.lng+CATALOG_HALF.lon).toFixed(4);
   const bbox = [south,west,north,east].join(',');
   const query = `[out:json][timeout:25];(nwr["shop"="supermarket"](${bbox});nwr["leisure"="fitness_centre"](${bbox}););out center;`;
-  // The main Overpass server is often slow (30 s+ measured); public mirrors carry the same OSM data.
-  // Try each in turn so one busy server does not leave every home without nearby amenities.
-  let lastError;
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    const url = new URL(endpoint);
-    url.searchParams.set('data',query);
-    try {
-      return catalogPlaces(await getJson(fetcher,url,{timeout:30000}));
-    } catch (error) {
-      lastError = error;
-    }
+  // Public Overpass servers carry the same OSM data, but which one is healthy changes by the minute
+  // (measured: one answers in 12 s while the others hang past 25 s). Ask them all at once and keep
+  // the first complete catalog. This runs once per student city per week.
+  try {
+    return await Promise.any(OVERPASS_ENDPOINTS.map(endpoint=>{
+      const url = new URL(endpoint);
+      url.searchParams.set('data',query);
+      return getJson(fetcher,url,{timeout:25000,limit:4_000_000}).then(data=>catalogPlaces(data));
+    }));
+  } catch (error) {
+    throw error?.errors?.[0] ?? new Error('No amenities provider answered');
   }
-  throw lastError ?? new Error('No amenities provider answered');
 }
 const OVERPASS_ENDPOINTS = [
   'https://overpass.private.coffee/api/interpreter',
@@ -591,5 +590,23 @@ export function createTravelService(db,{
     }
     return states;
   }
-  return {display,summary,check,checkMany};
+  /**
+   * Fetch supermarket/gym catalogs for up to `limit` student cities that have none (or an expired
+   * one), so every city's homes can show nearby amenities regardless of routing order.
+   * Returns the city ids attempted.
+   */
+  async function warmCatalogs(limit=2) {
+    if(localPlaces) return [];
+    const attempted=[];
+    for(const city of STUDENT_CITIES) {
+      if(attempted.length>=limit) break;
+      const cached=await db.getConfig(catalogKey(city));
+      const fresh=cached?.places?.length && cached.expires>now() && cached.mapVersion===AMENITIES_VERSION;
+      if(fresh || cached?.retryAfter>now()) continue;
+      attempted.push(city.id);
+      await catalog({lat:city.lat,lon:city.lng});
+    }
+    return attempted;
+  }
+  return {display,summary,check,checkMany,warmCatalogs};
 }

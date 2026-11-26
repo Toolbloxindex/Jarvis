@@ -100,6 +100,8 @@ export async function runCollector(store, {
       }
     }
     if (pending.length) await store.setConfig(queueKey, remaining);
+    // Amenity catalogs for cities that lack one (two per run; each is one Overpass query).
+    if (travel.warmCatalogs) await travel.warmCatalogs(2).catch(() => []);
     // Enrichment only: the pass logs and swallows its own failures.
     ai = await aiPass(store, result.aiIds ?? []);
     await store.finishCollectorRun(id, counts);
