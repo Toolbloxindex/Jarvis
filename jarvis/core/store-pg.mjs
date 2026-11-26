@@ -7,7 +7,9 @@ import { canonicalUrl, listingIdentity, planListingUpsert, listingUpdate } from 
 const travelPrefix = 'travel.listing.';
 const healthPrefix = 'discovery.health.';
 const aiCachePrefix = 'ai.cache.';
-const isCatalog = key => key === 'travel.catalog.local' || key === 'travel.catalog.v1';
+// Amenity catalogs (one per student city since the national expansion, plus the older local/v1
+// keys) live in the amenities table, which the public_amenities view exposes.
+const isCatalog = key => /^travel\.catalog\.[a-z0-9-]+$/.test(key);
 const iso = value => value == null ? null : new Date(value).toISOString();
 const alertReady = row => row.status === 'pending' ||
   Date.now() - Date.parse(row.updated_at) > Math.min(3600000, 60000 * 2 ** row.attempts);
