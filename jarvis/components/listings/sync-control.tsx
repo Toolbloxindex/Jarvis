@@ -1,10 +1,13 @@
 "use client";
 
 import { Popover } from "@base-ui/react/popover";
-import { DevicesIcon } from "@phosphor-icons/react";
+import { ArrowLeftIcon, CaretRightIcon, DevicesIcon } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
+import { accountStore, startAccount, type AccountState } from "@/lib/account";
 import { cn } from "@/lib/cn";
+import { AccountPanel } from "./account-panel";
+import { AlertsBody } from "./alerts-control";
 import {
   claimPairCode,
   createPairCode,
@@ -20,15 +23,39 @@ import {
  * and opens a panel to link another device (QR or 6-character code) or enter a code.
  * Opening a link like /listings#pair=K7P2QX on another device links it automatically.
  */
+type PanelView = "devices" | "email" | "alerts";
+
 export function SyncControl({ config }: { config: SyncConfig | null }) {
   const status = useSyncExternalStore(syncStatusStore.subscribe, syncStatusStore.get, syncStatusStore.server);
+  const account = useSyncExternalStore(accountStore.subscribe, accountStore.get, accountStore.server);
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<PanelView>("devices");
   // Focus the panel itself on open, not the code field: no surprise keyboard on phones.
   const popupRef = useRef<HTMLDivElement>(null);
+
+  // Other controls (Alerts) and auth links (password reset) open a specific view.
+  useEffect(() => {
+    const show = (e: Event) => {
+      setView(((e as CustomEvent<PanelView>).detail ?? "devices") as PanelView);
+      setOpen(true);
+    };
+    const linked = () =>
+      toast("Signed in", { id: "account", description: "Your list from your other devices is here now." });
+    window.addEventListener("hw:open-devices", show);
+    window.addEventListener("hw:account-linked", linked);
+    return () => {
+      window.removeEventListener("hw:open-devices", show);
+      window.removeEventListener("hw:account-linked", linked);
+    };
+  }, []);
+  useEffect(() => {
+    if (account.phase === "recovery") window.dispatchEvent(new CustomEvent("hw:open-devices", { detail: "email" }));
+  }, [account.phase]);
 
   useEffect(() => {
     if (!config) return;
     const stop = startSync(config);
+    startAccount(config);
     // A scanned QR opens /listings#pair=CODE; an already open tab gets it as a hash change.
     const fromHash = () => {
       const code = window.location.hash.match(/^#pair=([A-Za-z0-9-]{6,8})$/)?.[1];
@@ -49,7 +76,13 @@ export function SyncControl({ config }: { config: SyncConfig | null }) {
     status.phase === "offline" ? "bg-[#c2410c]" : status.phase === "syncing" ? "bg-ink-3 animate-pulse" : "bg-ink";
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root
+      open={open}
+      onOpenChange={setOpen}
+      onOpenChangeComplete={(isOpen) => {
+        if (!isOpen) setView("devices");
+      }}
+    >
       <Popover.Trigger
         aria-label={`Your devices (${label(status.phase)})`}
         className="press relative flex h-11 items-center gap-2 rounded-full px-3 text-[14px] font-semibold transition-colors duration-150 hover:bg-hover data-[popup-open]:bg-hover"
@@ -71,7 +104,32 @@ export function SyncControl({ config }: { config: SyncConfig | null }) {
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
             )}
           >
-            {open && <SyncPanel phase={status.phase} at={status.at} onDone={() => setOpen(false)} />}
+            {open && view === "email" && <AccountPanel onBack={() => setView("devices")} />}
+            {open && view === "alerts" && (
+              <div>
+                <div className="mb-1 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setView("devices")}
+                    aria-label="Back to devices"
+                    className="press -ml-2 grid size-9 place-items-center rounded-full hover:bg-hover"
+                  >
+                    <ArrowLeftIcon size={16} weight="bold" />
+                  </button>
+                  <Popover.Title className="text-[17px] font-semibold tracking-[-0.01em]">Alerts</Popover.Title>
+                </div>
+                <AlertsBody onNeedEmail={() => setView("email")} />
+              </div>
+            )}
+            {open && view === "devices" && (
+              <SyncPanel
+                phase={status.phase}
+                at={status.at}
+                account={account}
+                onDone={() => setOpen(false)}
+                onView={setView}
+              />
+            )}
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>
@@ -102,7 +160,19 @@ async function claim(code: string, onDone?: () => void) {
   }
 }
 
-function SyncPanel({ phase, at, onDone }: { phase: string; at: number | null; onDone: () => void }) {
+function SyncPanel({
+  phase,
+  at,
+  account,
+  onDone,
+  onView,
+}: {
+  phase: string;
+  at: number | null;
+  account: AccountState;
+  onDone: () => void;
+  onView: (view: PanelView) => void;
+}) {
   const [pair, setPair] = useState<PairCode | null>(null);
   const [failed, setFailed] = useState(false);
   const [entry, setEntry] = useState("");
@@ -201,6 +271,18 @@ function SyncPanel({ phase, at, onDone }: { phase: string; at: number | null; on
         </div>
       </form>
 
+      <div className="border-t border-line-soft pt-1">
+        <Row
+          title="Email"
+          detail={account.phase === "signed-in" ? (account.email ?? "Signed in") : "Optional · get your list back anywhere"}
+          onClick={() => onView("email")}
+        />
+        {/* The header has no room for the bell on phones: alerts live here. */}
+        <div className="sm:hidden">
+          <Row title="Alerts" detail="New homes for your search" onClick={() => onView("alerts")} />
+        </div>
+      </div>
+
       <button
         type="button"
         onClick={async () => {
@@ -213,6 +295,22 @@ function SyncPanel({ phase, at, onDone }: { phase: string; at: number | null; on
         Stop syncing this device
       </button>
     </div>
+  );
+}
+
+function Row({ title, detail, onClick }: { title: string; detail: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="press -mx-2 flex w-[calc(100%+16px)] items-center justify-between gap-3 rounded-xl px-2 py-2.5 text-left hover:bg-hover"
+    >
+      <span className="min-w-0">
+        <span className="block text-[14px] font-semibold">{title}</span>
+        <span className="block truncate text-[12px] text-ink-3">{detail}</span>
+      </span>
+      <CaretRightIcon size={14} weight="bold" className="shrink-0 text-ink-3" />
+    </button>
   );
 }
 
