@@ -7,16 +7,49 @@ import {normalizePhotos} from './photos.mjs';
 import {matchesHousingAnywhereEntity,housingAnywhereTitle,normalizeHousingAnywhere} from './discovery-housinganywhere.mjs';
 import {applyRoomTerms,applyAgencyTerms} from './discovery-room-agents.mjs';
 import {normalizeKamernetIndex,normalizeKamernetDetail} from './discovery-kamernet.mjs';
+import {STUDENT_CITIES,studentCityForName,inNetherlands} from '../lib/universities.ts';
 
+const cityKey=value=>String(value??'').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[\s-]+/g,' ').trim();
+/** Two spellings name the same municipality ("Den Haag" / "'s-Gravenhage" / "The Hague"). */
+export function sameCity(a,b){
+ if(!a||!b)return false;
+ const ca=studentCityForName(a),cb=studentCityForName(b);
+ return ca&&cb?ca.id===cb.id:cityKey(a)===cityKey(b);
+}
+const titleCase=value=>String(value??'').replace(/(^|[\s-])(\p{L})/gu,(_,sep,c)=>sep+c.toUpperCase());
+/** City a search URL was made for (Kamernet slug or HousingAnywhere path), for scope-less calls. */
+function cityFromSearchURL(source,url){
+ try{const path=new URL(url,source.origin).pathname;
+  const kamernet=path.match(/^\/en\/for-rent\/(?:room|studio|apartment)-([a-z0-9-]+)$/i)?.[1];
+  if(kamernet)return STUDENT_CITIES.find(c=>c.kamernet===kamernet)?.name??titleCase(kamernet.replace(/-/g,' '));
+  const ha=path.match(/^\/s\/([^/]+)--Netherlands$/i)?.[1];
+  if(ha)return decodeURIComponent(ha).replace(/-/g,' ');
+ }catch{}
+ return null;
+}
+/** Huizenbalie property URLs end in "<postcode>-<city>[-n]/". */
+function cityFromPropertyURL(source,href){
+ if(source.id!=='huizenbalie')return null;
+ try{const slug=new URL(href,source.origin).pathname.match(/-\d{4}[a-z]{2}-([a-z-]+?)(?:-\d+)?\/$/i)?.[1];
+  return slug?studentCityForName(slug.replace(/-/g,' '))?.name??titleCase(slug.replace(/-/g,' ')):null;}catch{return null;}
+}
+
+/**
+ * Sources with per-city search pages expose `scopes()`: one scope per student city. Each collector
+ * run reads a bounded number of pages per source (`pageBudget`) and resumes where it stopped, so
+ * every city is revisited every couple of hours while each run stays short.
+ */
+const kamernetScopes=()=>STUDENT_CITIES.filter(c=>c.kamernet).map(c=>({key:c.id,city:c.name,indexes:['room','studio','apartment'].map(k=>`/en/for-rent/${k}-${c.kamernet}?radius=1`)}));
+const housingAnywhereScopes=()=>STUDENT_CITIES.filter(c=>c.housinganywhere).map(c=>({key:c.id,city:c.housinganywhere.replace(/-/g,' '),indexes:[`/s/${c.housinganywhere}--Netherlands`]}));
 export const SOURCES=Object.freeze([
- {id:'kamernet',name:'Kamernet',origin:'https://kamernet.nl',kind:'next',indexes:['/en/for-rent/room-delft?radius=1','/en/for-rent/studio-delft?radius=1','/en/for-rent/apartment-delft?radius=1'],detail:/^\/en\/for-rent\/(?:room|studio|apartment)-delft\/[^/]+\/(?:room|studio|apartment)-\d+$/i,contact:'Paid contact access is held; no subscription will be purchased.'},
- {id:'housinganywhere',name:'HousingAnywhere',origin:'https://housinganywhere.com',kind:'html',indexes:['/s/Delft--Netherlands'],detail:/^\/room\/[^/]+\/nl\/Delft\//i,description:'descriptionContainer',contact:'Dutch landlord messaging requires a paid subscription and is disabled. Public tracking continues without purchase.'},
+ {id:'kamernet',name:'Kamernet',origin:'https://kamernet.nl',kind:'next',indexes:['/en/for-rent/room-delft?radius=1','/en/for-rent/studio-delft?radius=1','/en/for-rent/apartment-delft?radius=1'],scopes:kamernetScopes,pageBudget:24,detailLimit:10,detail:/^\/en\/for-rent\/(?:room|studio|apartment)-[a-z0-9-]+\/[^/]+\/(?:room|studio|apartment)-\d+$/i,contact:'Paid contact access is held; no subscription will be purchased.'},
+ {id:'housinganywhere',name:'HousingAnywhere',origin:'https://housinganywhere.com',kind:'html',indexes:['/s/Delft--Netherlands'],scopes:housingAnywhereScopes,pageBudget:8,detailLimit:10,detail:/^\/room\/[^/]+\/nl\/[^/]+\//i,description:'descriptionContainer',contact:'Dutch landlord messaging requires a paid subscription and is disabled. Public tracking continues without purchase.'},
  {id:'roommatch',name:'ROOMMATCH / DUWO',origin:'https://www.roommatch.nl',kind:'room',apiOrigin:'https://roommatching-aanbodapi.zig365.nl',indexes:['https://roommatching-aanbodapi.zig365.nl/api/v1/actueel-aanbod?limit=100&page=0'],detail:/^\/aanbod\/studentenwoningen\/details\b/,contact:'Use the existing ROOM account; no automatic applications are verified.'},
  {id:'funda',name:'Funda',origin:'https://www.funda.nl',kind:'html',indexes:['/zoeken/huur?selected_area=delft'],detail:/^\/detail\/huur\/delft\//,contact:'Automatic contact route unverified.'},
  {id:'pararius',name:'Pararius',origin:'https://www.pararius.com',kind:'html',indexes:['/apartments/delft'],detail:/^\/(?:apartment|studio|room)-for-rent\/delft\//,contact:'Automatic contact route unverified.'},
  {id:'bjornd',name:'Björnd Makelaardij',origin:'https://www.bjornd.nl',kind:'agent',indexes:['/nl/realtime-listings/consumer'],detail:/^\/nl\/woningaanbod\/details\//,description:'tab-omschrijving',contact:'Agent contact route unverified.'},
- {id:'verra',name:'Verra Makelaars',origin:'https://www.verra.nl',kind:'agent',indexes:['/nl/realtime-listings/consumer'],detail:/^\/nl\/woningaanbod\/woning\/delft\//,description:'tab-omschrijving',contact:'Agent contact route unverified.'},
- {id:'huizenbalie',name:'Huizenbalie',origin:'https://huizenbalie.nl',kind:'html',indexes:['/property-status/te-huur/'],detail:/^\/woning\/[^/]+-delft(?:-\d+)?\/$/i,description:'property-content',contact:'Agent contact route unverified.'},
+ {id:'verra',name:'Verra Makelaars',origin:'https://www.verra.nl',kind:'agent',indexes:['/nl/realtime-listings/consumer'],detail:/^\/nl\/woningaanbod\/woning\/[^/]+\//,description:'tab-omschrijving',contact:'Agent contact route unverified.'},
+ {id:'huizenbalie',name:'Huizenbalie',origin:'https://huizenbalie.nl',kind:'html',indexes:['/property-status/te-huur/'],detail:/^\/woning\/[^/]+-\d{4}[a-z]{2}-[a-z-]+(?:-\d+)?\/$/i,description:'property-content',contact:'Agent contact route unverified.'},
  {id:'facebook',name:'Facebook groups',origin:'https://www.facebook.com',kind:'account',indexes:[],contact:'Owner allows housing-listing collection only. No joining, reactions, posts, messages or account changes are permitted.'}
 ]);
 const attrs=(n,k)=>n.attrs?.find(a=>a.name===k)?.value||'';
@@ -47,42 +80,47 @@ function date(value){return typeof value==='string'&&/^\d{4}-\d{2}-\d{2}/.test(v
 function roomLocation(offer){
  const lat=offer.latitude,lng=offer.longitude;
  const postcode=/^[1-9]\d{3}\s?[A-Z]{2}$/i.test(offer.postalcode||'')?offer.postalcode.toUpperCase():'';
- return Number.isFinite(lat)&&Math.abs(lat-52)<0.2&&Number.isFinite(lng)&&Math.abs(lng-4.36)<0.3
+ return inNetherlands(lat,lng)
   ? {lat,lng,precision:'postcode',postcode,street:offer.street||''} : null;
 }
-export function parseIndex(source,html,url){
+export function parseIndex(source,html,url,scope={}){
  if(challengePage(html))throw Object.assign(new Error('The site returned a browser verification challenge.'),{status:'blocked'});
  if(source.kind==='room'){
   const response=JSON.parse(html);if(!Array.isArray(response.data)||!response._metadata)throw new Error('ROOMMATCH public feed format changed.');
   const meta=response._metadata;const current=Number(meta.page)||0;const next=[];
   if(current+1<Number(meta.page_count)){const u=new URL(url);u.searchParams.set('page',current+1);next.push(u.href);}
-  const candidates=response.data.filter(x=>/^delft$/i.test(x.city?.name||'')&&x.rentBuy==='Huur'&&!x.toewijzingIsGeannuleerd&&x.isGepubliceerd!==false).map(x=>({url:source.origin+'/aanbod/studentenwoningen/details?dwellingID='+encodeURIComponent(x.id),title:[x.street,x.houseNumber,x.houseNumberAddition,'Delft'].filter(Boolean).join(' '),city:'Delft',address:x.street?[x.street,[x.houseNumber,x.houseNumberAddition].filter(Boolean).join('-')].filter(Boolean).join(' '):null,rent_base:x.netRent,start_date:date(x.availableFromDate),end_date:date(x.availableTillDate),indexStamp:JSON.stringify([x.totalRent,x.availableFromDate,x.availableTillDate,x.closingDate]),inlineProperty:x}));
+  const candidates=response.data.filter(x=>(x.city?.name||'').trim()&&x.rentBuy==='Huur'&&!x.toewijzingIsGeannuleerd&&x.isGepubliceerd!==false).map(x=>({url:source.origin+'/aanbod/studentenwoningen/details?dwellingID='+encodeURIComponent(x.id),title:[x.street,x.houseNumber,x.houseNumberAddition,x.city.name.trim()].filter(Boolean).join(' '),city:x.city.name.trim(),address:x.street?[x.street,[x.houseNumber,x.houseNumberAddition].filter(Boolean).join('-')].filter(Boolean).join(' '):null,rent_base:x.netRent,start_date:date(x.availableFromDate),end_date:date(x.availableTillDate),indexStamp:JSON.stringify([x.totalRent,x.availableFromDate,x.availableTillDate,x.closingDate]),inlineProperty:x}));
   return {candidates,complete:next.length===0,next,total:meta.total_search_count};
  }
  if(source.kind==='agent'){
   const all=JSON.parse(html);if(!Array.isArray(all)||all.length&&(!('isRentals'in all[0])||!('city'in all[0])))throw new Error('Public feed format changed.');
-  return {candidates:all.filter(x=>x.isRentals===true&&/^delft$/i.test(x.city)&&/^(?:beschikbaar|available)$/i.test(x.status)).map(x=>({url:allowedURL(source,x.url),title:`${x.address}, ${x.city}`,address:x.address||null,priceText:decode(x.price),city:x.city,indexStamp:String(x.changed||''),photos:normalizePhotos(source.id,[...(Array.isArray(x.photos)?x.photos:[]),x.photo].filter(Boolean))})).filter(x=>x.url),complete:true,next:[]};
+  return {candidates:all.filter(x=>x.isRentals===true&&typeof x.city==='string'&&x.city.trim()&&/^(?:beschikbaar|available)$/i.test(x.status)).map(x=>({url:allowedURL(source,x.url),title:`${x.address}, ${x.city}`,address:x.address||null,priceText:decode(x.price),city:x.city,indexStamp:String(x.changed||''),photos:normalizePhotos(source.id,[...(Array.isArray(x.photos)?x.photos:[]),x.photo].filter(Boolean))})).filter(x=>x.url),complete:true,next:[]};
  }
  const doc=parse(html);const next=[];
  if(source.kind==='next'){
   const page=scriptJSON(doc,'__NEXT_DATA__')?.props?.pageProps?.targetPageProps;
   const feed=page?.findListingsResponse;if(!feed||!Array.isArray(feed.listings))throw new Error('Public search format changed.');
-  if(!/^delft$/i.test(page.allFilters?.cityName||''))throw new Error('Search did not establish Delft-only results.');
+  const expected=scope.city??cityFromSearchURL(source,url);
+  if(!expected||!sameCity(page.allFilters?.cityName,expected))throw new Error(`Search did not establish ${expected||'single-city'} results.`);
   const anchors=nodes(doc,n=>n.tagName==='a').map(n=>attrs(n,'href'));
-  const candidates=[...feed.listings,...(feed.topAdListings||[])].filter(x=>/^delft$/i.test(x.city)).map(x=>{
+  const candidates=[...feed.listings,...(feed.topAdListings||[])].filter(x=>sameCity(x.city,expected)).map(x=>{
    const link=anchors.find(a=>new RegExp(`/(?:room|studio|apartment)-${x.listingId}(?:$|[?#])`).test(a));
-   return {url:allowedURL(source,link||''),title:`${x.street}, Delft`,address:x.street||null,city:'Delft',...normalizeKamernetIndex(x),indexStamp:JSON.stringify([x.totalRentalPrice,x.utilitiesIncluded,x.availabilityStartDate,x.availabilityEndDate,x.isReactForFree]),contactFree:x.isReactForFree===true};
+   const preview=[x.fullPreviewImageUrl,x.thumbnailUrl].find(v=>typeof v==='string'&&/^https:\/\/resources\.kamernet\.nl\/image\/[a-z0-9-]{10,100}$/i.test(v));
+   return {url:allowedURL(source,link||''),title:`${x.street}, ${x.city}`,address:x.street||null,city:x.city,...(preview?{photos:[preview]}:{}),...normalizeKamernetIndex(x),indexStamp:JSON.stringify([x.totalRentalPrice,x.utilitiesIncluded,x.availabilityStartDate,x.availabilityEndDate,x.isReactForFree]),contactFree:x.isReactForFree===true};
   }).filter(x=>x.url);
   const current=Number(page.allFilters.pageNo)||1;const count=Number(page.allFilters.listingsPerPage)||17;
   if(current*count<feed.total){const u=new URL(url);u.searchParams.set('pageNo',current+1);next.push(u.href);}
   return {candidates,complete:current*count>=feed.total,next,total:feed.total};
  }
  const ha=source.id==='housinganywhere'?preloadedState(html)?.search:null;
- const anchors=nodes(doc,n=>n.tagName==='a');const candidates=anchors.map(n=>({url:allowedURL(source,attrs(n,'href')),title:tidy(plain(n)).slice(0,160),city:'Delft'})).filter(x=>x.url);
+ const searchCity=scope.city??cityFromSearchURL(source,url);
+ const anchors=nodes(doc,n=>n.tagName==='a');const candidates=anchors.map(n=>{const href=attrs(n,'href');return {url:allowedURL(source,href),title:tidy(plain(n)).slice(0,160),city:searchCity??cityFromPropertyURL(source,href)??'Delft'};}).filter(x=>x.url);
+ // HousingAnywhere renders only a few result anchors; the page state lists every result on the page.
+ if(ha){const known=new Set(candidates.map(c=>c.url));for(const m of html.matchAll(/\/room\/ut\d+\/nl\/[A-Za-z%'-]+\/[a-z0-9%-]{0,80}/gi)){const link=allowedURL(source,m[0]);if(link&&!known.has(link)){known.add(link);candidates.push({url:link,title:'',city:searchCity??'Delft'});}}}
  for(const n of anchors){try{const u=new URL(attrs(n,'href'),url);if(u.origin!==source.origin)continue;if(attrs(n,'rel').split(' ').includes('next')||attrs(n,'class').split(' ').includes('next')||/^(?:next|volgende|›|»)$/i.test(tidy(plain(n))))next.push(u.href);}catch{}}
- if(!candidates.length&&!ha?.pageInfo&&!anchors.some(n=>/\/woning\//.test(attrs(n,'href'))))throw Object.assign(new Error(source.id==='roommatch'?'The public search page requires a rendered collector; no account-specific coverage is established.':'No original Delft property links could be verified in this page.'),{status:'attention'});
+ if(!candidates.length&&!ha?.pageInfo&&!anchors.some(n=>/\/woning\//.test(attrs(n,'href'))))throw Object.assign(new Error(source.id==='roommatch'?'The public search page requires a rendered collector; no account-specific coverage is established.':'No original property links could be verified in this page.'),{status:'attention'});
  let complete=false;
- if(ha?.pageInfo){const info=ha.pageInfo;if(!/^delft$/i.test(ha.loadState?.cityCanonical||'')||!Number.isFinite(info.offset)||!Number.isFinite(info.total)||!(info.limit>0))throw new Error('HousingAnywhere search scope could not be verified.');if(info.offset+info.limit<info.total){const u=new URL(url);u.searchParams.set('page',Math.floor(info.offset/info.limit)+2);next.push(u.href);}else complete=true;}
+ if(ha?.pageInfo){const info=ha.pageInfo;if(!sameCity(ha.loadState?.cityCanonical,searchCity??'Delft')||!Number.isFinite(info.offset)||!Number.isFinite(info.total)||!(info.limit>0))throw new Error('HousingAnywhere search scope could not be verified.');if(info.offset+info.limit<info.total){const u=new URL(url);u.searchParams.set('page',Math.floor(info.offset/info.limit)+2);next.push(u.href);}else complete=true;}
  return {candidates,complete,next:[...new Set(next)]};
 }
 export function extractPropertyPhotos(source,html,candidate={},doc=parse(html)){
@@ -92,7 +130,7 @@ export function extractPropertyPhotos(source,html,candidate={},doc=parse(html)){
   const data=scriptJSON(doc,'__NEXT_DATA__')?.props?.pageProps?.targetPageProps?.listingDetails;
   // imageList belongs to this property, whereas landlordPhotoKey and suggested
   // listings are deliberately outside the photo collection path.
-  if(data&&/^delft$/i.test(data.computedCityName||''))values=(data.imageList||[]).filter(v=>typeof v==='string'&&/^[a-z0-9-]{10,100}$/i.test(v)).map(id=>'https://resources.kamernet.nl/image/'+id);
+  if(data&&sameCity(data.computedCityName,candidate.city??'Delft'))values=(data.imageList||[]).filter(v=>typeof v==='string'&&/^[a-z0-9-]{10,100}$/i.test(v)).map(id=>'https://resources.kamernet.nl/image/'+id);
  }else if(source.id==='housinganywhere'){
   const entity=preloadedState(html)?.listing?.entity;
   if(entity)values=(entity.photoURLList||[]).filter(p=>p&&typeof p.url==='string').map(p=>p.url);
@@ -105,7 +143,7 @@ export function parseDetail(source,html,candidate){
  if(challengePage(html))throw Object.assign(new Error('Property page requires browser verification.'),{status:'blocked'});
  const doc=parse(html);let title=candidate.title;let description='';let structured={};let featureLines=[];let kamernetDetails;
  const haEntity=source.id==='housinganywhere'?preloadedState(html)?.listing?.entity:null;
- if(haEntity&&!matchesHousingAnywhereEntity(haEntity,candidate))throw new Error('HousingAnywhere did not confirm the original Delft property.');
+ if(haEntity&&!matchesHousingAnywhereEntity(haEntity,candidate))throw new Error('HousingAnywhere did not confirm the original property.');
  if(source.kind==='room'){
   const x=candidate.inlineProperty;if(!x||typeof x.infoveld!=='string')throw new Error('ROOMMATCH description unavailable.');
   description=decode(x.infoveld)+'\n'+decode(x.infoveldBewoners)+'\n'+[x.rentDuration?.name,x.dwellingType?.name,x.woningsoort?.name,...(x.doelgroepen||[]).map(d=>d.name)].filter(Boolean).join('\n');
@@ -125,7 +163,7 @@ export function parseDetail(source,html,candidate){
  }else if(source.kind==='next'){
   const data=scriptJSON(doc,'__NEXT_DATA__')?.props?.pageProps?.targetPageProps?.listingDetails;
   const id=new URL(candidate.url).pathname.match(/-(\d+)$/)?.[1];
-  if(!data||!/^delft$/i.test(data.computedCityName||'')||!id||String(data.listingId)!==id)throw new Error('Original detail did not establish the listed Delft property.');
+  if(!data||!sameCity(data.computedCityName,candidate.city??'Delft')||!id||String(data.listingId)!==id)throw new Error('Original detail did not establish the listed property.');
   kamernetDetails=data;
   description=decode(data.englishDescription||data.dutchDescription);title=data.englishTitle||data.dutchTitle||title;
  }else{
@@ -183,6 +221,8 @@ export function robotRules(text,agent='housewatch'){
 }
 export function robotsAllow(policy,path){let best=null;for(const rule of policy.rules){const terminal=rule.path.endsWith('$');const value=terminal?rule.path.slice(0,-1):rule.path;const re=new RegExp('^'+value.split('*').map(s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('.*')+(terminal?'$':''));if(re.test(path)&&(!best||value.replaceAll('*','').length>best.size||value.replaceAll('*','').length===best.size&&rule.allow))best={size:value.replaceAll('*','').length,allow:rule.allow};}return best?.allow!==false;}
 const UA='Housewatch/0.1 (read-only housing verification)';
+/** Unchanged homes are re-marked as seen at most this often (saves a database write per home per run). */
+const TOUCH_MS=60*60000;
 export function createSourceFetcher(source,{fetchImpl=fetch,paceMs=2000,onResponse}={}){
  const policies=new Map(),last=new Map();const origins=new Set([source.origin,...(source.apiOrigin?[source.apiOrigin]:[])]);
  async function raw(url){let current=new URL(url);const original=current.origin;for(let i=0;i<4;i++){
@@ -214,7 +254,7 @@ function summary(source,c){
  const body=[c.title,c.city,c.priceText||'',c.start_date?`Available from ${c.start_date}`:'','Only a public index summary has been checked.'].join('\n');
  const parsed=parseListingText(body,source.id,c.url);
  const rentBase=source.kind==='next'?c.rent_base??null:c.rent_base??(parsed.rent_total===null?parsed.rent_base:null);
- return {...parsed,title:c.title||'Delft property',city:c.city,address:c.address||null,body,
+ return {...parsed,title:c.title||`${c.city||'Dutch'} property`,city:c.city,address:c.address||null,body,
   rent_base:rentBase,rent_total:null,rent_advertised_total:c.rent_advertised_total??null,
   rent_known_monthly_min:c.rent_known_monthly_min??parsed.rent_known_monthly_min??rentBase,
   location:c.inlineProperty?roomLocation(c.inlineProperty):c.location??null,
@@ -238,9 +278,28 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
   if(previous.nextCheckAt&&Date.parse(previous.nextCheckAt)>now&&(!force||['blocked','policy_blocked'].includes(previous.status))){result.sources.push({id:source.id,...previous,skipped:true});continue;}
   const get=fetchSource?url=>fetchSource(source,url):createSourceFetcher(source);let details=0,attempts=0,errors=0;let next=[],complete=false;const found=new Map();let pages=0;
   try{
-   const queue=source.indexes.map(p=>new URL(p,source.origin).href);const seen=new Set();const continuation=await store.getConfig('discovery.continuation.'+source.id,[]);queue.push(...continuation.filter(u=>[source.origin,source.apiOrigin].includes(new URL(u).origin)));
-   while(queue.length&&pages<12){const url=queue.shift();if(seen.has(url))continue;seen.add(url);const parsed=parseIndex(source,await get(url),url);pages++;for(const c of parsed.candidates)found.set(c.url,c);queue.push(...parsed.next.filter(u=>!seen.has(u)));complete=parsed.complete&&queue.length===0;}
-   next=queue;await store.setConfig('discovery.continuation.'+source.id,next.slice(0,20));
+   // Scope rotation: finish the scope a previous run stopped in, then continue round-robin until
+   // this source's page budget is spent. A scope's scan can span runs; `startedAt` dates it.
+   const scopes=source.scopes?source.scopes():[{key:'all',city:null,indexes:source.indexes}];
+   const budget=source.pageBudget??12;const cursorKey='discovery.cursor.'+source.id;
+   let cursor=(Number(await store.getConfig(cursorKey,0))||0)%scopes.length;
+   const completed=[];const scopeErrors=[];const ownOrigin=u=>{try{return [source.origin,source.apiOrigin].includes(new URL(u).origin);}catch{return false;}};
+   for(let visited=0;visited<scopes.length&&pages<budget;visited++){
+    const scope=scopes[cursor];const stateKey='discovery.scope.'+source.id+'.'+scope.key;
+    const state=await store.getConfig(stateKey,null);const resume=Array.isArray(state?.next)&&state.next.some(ownOrigin);
+    const startedAt=resume&&Number.isFinite(state.startedAt)?state.startedAt:now;
+    const queue=resume?state.next.filter(ownOrigin):scope.indexes.map(p=>new URL(p,source.origin).href);const seen=new Set(resume?state.seen??[]:[]);
+    try{
+     while(queue.length&&pages<budget){const url=queue.shift();if(seen.has(url))continue;seen.add(url);const parsed=parseIndex(source,await get(url),url,scope);pages++;for(const c of parsed.candidates)found.set(c.url,c);queue.push(...parsed.next.filter(u=>!seen.has(u)));}
+    }catch(e){
+     // One city's search failing (a renamed slug, a format change) must not stop the other cities.
+     if(['blocked','policy_blocked'].includes(e.status)||e?.name==='PostgresError'||!source.scopes)throw e;
+     errors++;scopeErrors.push(`${scope.key}: ${e.message}`);await store.setConfig(stateKey,null);cursor=(cursor+1)%scopes.length;continue;
+    }
+    if(queue.length){next=queue;await store.setConfig(stateKey,{next:queue.slice(0,40),startedAt,seen:[...seen].slice(-60)});break;}
+    await store.setConfig(stateKey,null);completed.push({scope,startedAt});cursor=(cursor+1)%scopes.length;
+   }
+   await store.setConfig(cursorKey,cursor);complete=completed.length===scopes.length;
    const oldRows=(await store.getListings(source.id)).filter(l=>l.source===source.id&&l.discovery===true);
    const oldMap=new Map(oldRows.map(l=>[allowedURL(source,l.url)||l.url,l]));
    const checkKey=c=>'discovery.checked.'+source.id+'.'+c.url;
@@ -253,13 +312,17 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
       priority:!row?.property_details_checked?0:check.stamp!==stamp?1:2, lastAttempt:Date.parse(check.at)||0};
    };
    const candidates=(await Promise.all([...found.values()].map(depth))).sort((a,b)=>a.priority-b.priority||a.lastAttempt-b.lastAttempt);
-   let detailsPending=0;
+   let detailsPending=0,newPending=0,added=0;const limit=source.detailLimit??detailLimit;const newLimit=source.newLimit??150;
    for(const {c,row:old,stamp,fresh,changedStamp,retryLater} of candidates){
     const seenAt=new Date(now).toISOString();
     const visible={last_seen_at:seenAt,availability:'available',contact_policy:source.contact,contact_access:c.contactFree===true?'explicitly_free':'unverified'};
-    if(fresh){changedListing(old,await store.updateListing(old.id,{...visible,source_detail_pending:false}));continue;}
+    // Nothing new to record: skip the write if this home was marked as seen within the hour.
+    const idle=!!old&&old.availability==='available'&&!changedStamp&&old.source_detail_pending!==true&&Date.parse(old.last_seen_at||'')>now-TOUCH_MS;
+    if(fresh){if(!idle)changedListing(old,await store.updateListing(old.id,{...visible,source_detail_pending:false}));continue;}
+    // New homes are capped per run so a first national pass cannot outlast the run; the rest come next time.
+    if(!old&&added>=newLimit){newPending++;continue;}
     let listing;
-    if(!retryLater&&(source.kind==='room'||attempts<detailLimit)){
+    if(!retryLater&&(source.kind==='room'||attempts<limit)){
      attempts++;
      try {
       listing=parseDetail(source,source.kind==='room'?'<html></html>':await get(c.url),c);
@@ -274,9 +337,10 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
     }
     if(!listing){
      detailsPending++;
-     if(old){changedListing(old,await store.updateListing(old.id,{...visible,source_detail_pending:changedStamp||old.source_detail_pending===true}));continue;}
+     if(old){if(!idle)changedListing(old,await store.updateListing(old.id,{...visible,source_detail_pending:changedStamp||old.source_detail_pending===true}));continue;}
      listing=summary(source,c);
     }
+    if(!old)added++;
     if(c.start_date&&!listing.start_date){listing.start_date=c.start_date;listing.start_kind='earliest';}
     if(c.end_date&&!listing.end_date)listing.end_date=c.end_date;
     if(listing.start_kind==='immediate'&&!listing.start_date){
@@ -292,16 +356,21 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
      await store.updateListing(current.id,{assessment:updated,status:updated.status,reasons:updated.reasons,questions:updated.questions});
     }
     changedListing(old,current,saved);
-    if(assessment.status==='eligible'&&(saved.isNew||saved.isChanged))await store.enqueueNotification('match:'+saved.listing.id+':'+saved.listing.fingerprint,{title:'New Delft housing match',body:listing.title+' — confirmed terms match your search.',url:'/#listing='+saved.listing.id,type:'match'});
+    if(assessment.status==='eligible'&&(saved.isNew||saved.isChanged))await store.enqueueNotification('match:'+saved.listing.id+':'+saved.listing.fingerprint,{title:'New housing match',body:listing.title+' — confirmed terms match your search.',url:'/#listing='+saved.listing.id,type:'match'});
    }
-   if(complete)for(const old of oldRows)if(!found.has(allowedURL(source,old.url)||old.url)&&old.availability!=='unavailable'){
+   // A finished scan of a scope (city) retires its homes that were not seen during that scan.
+   // Every home seen in a scan was written at most TOUCH_MS before the scan started (see `idle`).
+   for(const {scope,startedAt} of completed)for(const old of oldRows){
+    if(old.availability==='unavailable'||found.has(allowedURL(source,old.url)||old.url))continue;
+    if(scope.city&&!sameCity(old.city,scope.city))continue;
+    if((Date.parse(old.last_seen_at||'')||0)>=startedAt-TOUCH_MS)continue;
     const removed=await store.updateListing(old.id,{availability:'unavailable',status:'rejected',assessment:{status:'rejected',reasons:['The source no longer lists this property as available.'],questions:[]}});
     changedListing(old,removed);
    }
-   const interval=await store.getConfig('discovery.intervalMinutes',5);const health={status:errors||next.length||detailsPending?'partial':'connected',checkedAt:new Date(now).toISOString(),nextCheckAt:new Date(now+interval*60000).toISOString(),pagesChecked:pages,propertiesFound:found.size,detailsChecked:details,detailsPending,errors,failures:0,coverage:complete?'complete_public_feed':'bounded_public_pages',backlogPages:next.length,message:`Public discovery found ${found.size} Delft properties. ${details} full descriptions checked this cycle.${detailsPending?' '+detailsPending+' detail checks pending.':''} ${complete?'The returned public feed was covered.':'Coverage is limited to the checked public pages.'}`};await store.setConfig(key,health);result.sources.push({id:source.id,...health});result.checked++;
+   const interval=await store.getConfig('discovery.intervalMinutes',5);const health={status:errors||next.length||detailsPending||newPending?'partial':'connected',checkedAt:new Date(now).toISOString(),nextCheckAt:new Date(now+interval*60000).toISOString(),pagesChecked:pages,propertiesFound:found.size,detailsChecked:details,detailsPending,newPending,errors,failures:0,coverage:complete?'complete_public_feed':'bounded_public_pages',backlogPages:next.length,scopesCompleted:completed.map(s=>s.scope.key),scopesTotal:scopes.length,...(scopeErrors.length?{scopeErrors}:{}),message:`Public discovery found ${found.size} properties${scopes.length>1?` across ${completed.length} of ${scopes.length} cities this run`:''}. ${details} full descriptions checked this cycle.${detailsPending?' '+detailsPending+' detail checks pending.':''}${newPending?' '+newPending+' new homes deferred to the next run.':''} ${complete?'The returned public feed was covered.':'Coverage is limited to the checked public pages.'}`};await store.setConfig(key,health);result.sources.push({id:source.id,...health});result.checked++;
   }catch(error){if(error?.name==='PostgresError'||error?.code?.startsWith('ERR_SQLITE')) throw error;const failures=(previous.failures||0)+1;const blocked=['blocked','policy_blocked'].includes(error.status);const minutes=blocked?Math.min(360,30*2**Math.min(4,failures-1)):Math.min(60,5*2**Math.min(3,failures-1));const health={...previous,status:error.status||'attention',checkedAt:new Date(now).toISOString(),nextCheckAt:new Date(Math.max(now+minutes*60000,error.retryAt||0)).toISOString(),failures,message:error.message,pagesChecked:pages,propertiesFound:found.size,detailsChecked:details};await store.setConfig(key,health);result.sources.push({id:source.id,...health});}
  }
  if(result.added||result.changed)await store.addEvent('listings_discovered',{added:result.added,changed:result.changed,sourceIds:result.sources.filter(s=>['connected','partial'].includes(s.status)&&!s.skipped).map(s=>s.id)});
- if(result.reviewAdded)await store.enqueueNotification('review-digest:'+new Date(now).toISOString().slice(0,10),{title:'New Delft candidates to review',body:`${result.reviewAdded} new property candidate(s) have unconfirmed terms. They are not verified eligible matches.`,url:'/#review',type:'review'});
+ if(result.reviewAdded)await store.enqueueNotification('review-digest:'+new Date(now).toISOString().slice(0,10),{title:'New candidates to review',body:`${result.reviewAdded} new property candidate(s) have unconfirmed terms. They are not verified eligible matches.`,url:'/#review',type:'review'});
  return result;
 }

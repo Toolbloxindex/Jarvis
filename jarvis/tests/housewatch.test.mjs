@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { listings as mocks } from '../lib/listings/data.ts';
-import { readListings } from '../lib/server/listings-data.ts';
+import { areaName, mapStoredListings, readListings } from '../lib/server/listings-data.ts';
 import { listingEligibility } from '../lib/server/listing-eligibility.ts';
 import { travelDetail } from '../lib/server/listing-travel.ts';
 import { openExistingStore, validListingId } from '../core/runtime.mjs';
@@ -64,7 +64,8 @@ test('maps a Store fixture with duplicates, history, charges and cached travel',
     store.updateListing(first.id, { last_seen_at: '2099-01-01T09:00:00Z' });
     store.updateListing(first.id, { availability: 'unavailable' });
     store.updateListing(first.id, { availability: 'available' });
-    store.upsertListing({ ...primary, id: 'fixture-other', source_id: 'other', city: 'Rijswijk', address: null });
+    // Excluded from the public feed: a post seeking housing (any city is public since the national expansion).
+    store.upsertListing({ ...primary, id: 'fixture-other', source_id: 'other', city: 'Rijswijk', address: null, wanted_ad: true });
     store.upsertListing({ ...primary, id: 'fixture-lead', source_id: 'lead', listing_kind: 'general_lead' });
     store.setConfig('travel.listing.' + first.id, {
       key: createHash('sha256').update('examplestreetdelft').digest('hex'),
@@ -103,7 +104,8 @@ test('maps a Store fixture with duplicates, history, charges and cached travel',
   assert.equal(listing.eligibility.pets, 'no');
   assert.equal(listing.transitToAula, 17);
   assert.deepEqual(listing.location, {
-    lat: 52.01, lng: 4.36, precision: 'street', street: 'Example Street', postcode: '', neighbourhood: '',
+    // No neighbourhood or district: the street stands in, so "Room in …" never ends empty.
+    lat: 52.01, lng: 4.36, precision: 'street', street: 'Example Street', postcode: '', neighbourhood: 'Example Street',
   });
   assert.equal(listing.nearestSupermarket.name, 'Fixture supermarket');
   assert.equal(listing.nearestGym.lng, 4.36);
@@ -158,7 +160,7 @@ test('keeps missing fields unknown and reads a legacy database without migrating
   assert.equal(statSync(directory).mode, mode);
 });
 
-test('falls back for missing, uninitialized, empty and non-Delft databases', (t) => {
+test('falls back for missing, uninitialized and empty databases; any Dutch city is live', (t) => {
   const { directory, path } = fixture(t);
   const expectMock = (candidate) => assert.deepEqual(readListings(candidate), { listings: mocks, source: 'mock', updatedAt: null });
   expectMock(path);
@@ -169,13 +171,29 @@ test('falls back for missing, uninitialized, empty and non-Delft databases', (t)
   const store = new Store(path);
   try {
     expectMock(path);
-    store.upsertListing({ ...primary, city: 'Rotterdam' });
-    expectMock(path);
     store.upsertListing({ ...primary, source_id: 'lead', id: 'only-lead', listing_kind: 'general_lead' });
     expectMock(path);
+    store.upsertListing({ ...primary, city: 'Rotterdam' });
+    const live = readListings(path);
+    assert.equal(live.source, 'live');
+    assert.equal(live.listings.length, 1);
   } finally {
     store.close();
   }
+});
+
+test('a region query that matches nothing is an empty live feed, not the demo homes', () => {
+  assert.deepEqual(mapStoredListings([], [], () => ({ status: 'needs_location' }), null, { emptyIsLive: true }),
+    { listings: [], source: 'live', updatedAt: null });
+});
+
+test('"Room in …" never ends empty: neighbourhood, district, street, then city', () => {
+  assert.equal(areaName({ neighbourhood: 'Wippolder', city: 'Delft' }, { district: 'Hof van Delft' }, 'Choorstraat'), 'Wippolder');
+  assert.equal(areaName({ neighbourhood: '', city: 'Delft' }, { district: 'Binnenstad' }, 'Choorstraat'), 'Binnenstad');
+  assert.equal(areaName({ neighbourhood: null, city: 'Delft' }, null, 'Choorstraat'), 'Choorstraat');
+  assert.equal(areaName({ city: 'den haag' }, null, ''), 'The Hague');
+  assert.equal(areaName({ city: 'capelle aan den ijssel' }, null, ''), 'Capelle Aan Den Ijssel');
+  assert.equal(areaName({ city: '' }, null, ''), 'the Netherlands');
 });
 
 test('derives eligibility from explicit text and native applicant fields', () => {
@@ -222,7 +240,8 @@ test('travel uses only the addressed listing and preserves partial cached routes
     motis: '',
     localPlaces: '',
   });
-  store.setConfig('travel.catalog.v1', {
+  // Amenity catalogs are per student city since the national expansion.
+  store.setConfig('travel.catalog.delft', {
     places: [{ kind: 'gym', name: 'Fixture gym', lat: 52.009, lon: 4.37 }],
     expires: Date.parse('2099-01-02'), mapVersion: 2,
   });

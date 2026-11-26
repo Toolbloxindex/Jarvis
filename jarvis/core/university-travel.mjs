@@ -4,6 +4,36 @@ export const CAMPUSES = UNIVERSITIES.map(({ id, short, place, city, lat, lng }) 
   ({ id, kind: 'campus', name: id === DEFAULT_UNIVERSITY ? short + ' ' + place : short, city, lat, lon: lng }));
 export const DEFAULT_CAMPUS = CAMPUSES.find(({ id }) => id === DEFAULT_UNIVERSITY);
 
+const metres = (a, b) => {
+  const r = Math.PI / 180;
+  const h = Math.sin((b.lat - a.lat) * r / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin((b.lon - a.lon) * r / 2) ** 2;
+  return 12_742_000 * Math.asin(Math.sqrt(Math.min(1, h)));
+};
+
+/** Campuses routed from a home: those a student could plausibly commute to (straight line). */
+export const ROUTE_REACH_M = 40_000;
+export function nearbyCampuses(origin, reach = ROUTE_REACH_M) {
+  return CAMPUSES.filter((campus) => metres(origin, campus) <= reach);
+}
+
+/** The Delft rail model below only applies to homes around Delft's two stations. */
+export function nearDelftRail(origin) {
+  return metres(origin, RAIL_STATIONS.delft) <= 12_000;
+}
+
+/**
+ * Door-to-door public transport estimate where no timetable route or rail model exists.
+ * Short trips: bus/tram at ~14 km/h plus walking and waiting. Longer ones: train at ~60 km/h
+ * plus ~18 minutes to get to, wait at and leave the stations. Always marked as an estimate.
+ */
+export function estimateTransitMinutes(km) {
+  if (!Number.isFinite(km) || km < 0) return null;
+  if (km <= 1.2) return null; // walking distance: transit adds nothing
+  const local = km / 14 * 60 + 9;
+  const rail = km / 60 * 60 + 18;
+  return Math.round(km <= 8 ? local : Math.min(local, rail));
+}
+
 // Representative weekday, off-peak planning inputs. NS departure boards (Delft and Delft Campus)
 // establish stops and frequencies: https://assets.travelsupport-p.cla.ns.nl/stations/vertrekstaten/DT-2.pdf
 // NS publishes typical journey times for Delft–Leiden (24 min) and Delft–Den Haag HS (8 min):
@@ -119,7 +149,8 @@ export function campusTravelTimes(originIndex, origin, destinations, plan, { wal
     if (walkMinutes === null || bikeMinutes === null || !validMetric(metres)) return [];
     const lastMile = Object.fromEntries(arrivalIds.map((id, row) => [id, minute(walk, plan.originCount + row, index)]));
     const routed = transit?.[index];
-    const railMinutes = transit ? null : estimateRailMinutes(campus, access, lastMile);
+    const railMinutes = transit ? null : estimateRailMinutes(campus, access, lastMile) ??
+      estimateTransitMinutes(metres / 1000);
     const transitMinutes = routed?.status === 'ok' ? Math.round(routed.seconds / 60) : railMinutes;
     return [[campus.id, {
       walk: Math.round(walkMinutes), bike: Math.round(bikeMinutes), transit: transitMinutes,

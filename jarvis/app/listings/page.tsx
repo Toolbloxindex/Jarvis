@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
-import { ListingsExperience } from "@/components/listings/listings-experience";
+import { RegionFeed } from "@/components/listings/region-feed";
 import { DEFAULT_SEARCH } from "@/lib/listings/defaults";
-import { getLivePage } from "@/lib/server/listings-repo";
+import { DEFAULT_REGION, getRegionPage } from "@/lib/server/listings-repo";
 
 export const metadata: Metadata = {
-  title: "Homes in Delft · Housewatch",
-  description: "Rooms, studios and apartments in Delft from every source, checked against your search.",
+  title: "Student homes in the Netherlands · Housewatch",
+  description:
+    "Rooms, studios and apartments near every Dutch university, from every source, checked against your search.",
 };
 
 /** Public values only (project URL + anon key); the database functions enforce access. */
@@ -16,15 +17,7 @@ function syncConfig() {
 }
 
 export default async function ListingsPage() {
-  const page = await getLivePage();
-  return (
-    <ListingsExperience
-      listings={page.listings}
-      now={page.now}
-      updatedAt={page.updatedAt}
-      collecting={page.collecting}
-      initialSearch={DEFAULT_SEARCH}
-      sync={syncConfig()}
-    />
-  );
+  // The default region is server-rendered; other regions load on the client (cached API).
+  const page = await getRegionPage(DEFAULT_REGION);
+  return <RegionFeed initial={page} initialSearch={DEFAULT_SEARCH} sync={syncConfig()} />;
 }

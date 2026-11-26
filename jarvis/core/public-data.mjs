@@ -67,7 +67,7 @@ export function publicTravelData(record) {
       ...select(result, ['status', 'mapVersion', 'campusSignature', 'checkedAt', 'sampleDeparture', 'transitEnabled']),
       ...(result.travelTimes ? { travelTimes: Object.fromEntries(Object.entries(result.travelTimes).map(([id, route]) =>
         [id, select(route, ['walk', 'bike', 'transit', 'km', 'approximate', 'source'])])) } : {}),
-      origin: result.origin ? select(result.origin, ['lat', 'lon', 'precision']) : null,
+      origin: result.origin ? select(result.origin, ['lat', 'lon', 'precision', 'district']) : null,
       destinations: (result.destinations ?? []).map(destination => ({
         ...select(destination, ['id', 'name', 'kind', 'lat', 'lon']),
         routes: Object.fromEntries(Object.entries(destination.routes ?? {}).map(([mode, route]) =>

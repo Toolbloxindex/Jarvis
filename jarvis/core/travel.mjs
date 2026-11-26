@@ -1,12 +1,18 @@
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {setTimeout as wait} from 'node:timers/promises';
-import {CAMPUSES, DEFAULT_CAMPUS, streetTablePlan, streetTableURL, parseStreetTable, tableRoute, campusTravelTimes} from './university-travel.mjs';
+import {CAMPUSES, streetTablePlan, streetTableURL, parseStreetTable, tableRoute, campusTravelTimes, nearbyCampuses, nearDelftRail} from './university-travel.mjs';
+import {STUDENT_CITIES} from '../lib/universities.ts';
 
 const MINUTE = 60_000;
 const DAY = 1440 * MINUTE;
 const POSTCODE = /\b[1-9]\d{3}\s?[A-Z]{2}\b/i;
-const ALLOWED_AREA = {south:51.90, west:4.20, north:52.13, east:4.56};
+/** Amenities are catalogued per student city: a box of about 26 × 26 km around its centre. */
+const CATALOG_HALF = {lat:0.12, lon:0.19};
+/** Homes farther than this from every student city get no supermarket/gym catalog. */
+const CATALOG_REACH_M = 30_000;
+/** Daily cap on public OSRM table requests (two per home: walk + bike). */
+const OSRM_DAILY = Number(process.env.HOUSEWATCH_OSRM_DAILY ?? 1500);
 const USER_AGENT = 'Housewatch/0.1 (housing travel estimates)';
 const MAP_VERSION = 3;
 const CAMPUS_SIGNATURE = createHash('sha256').update(JSON.stringify(CAMPUSES)).digest('hex');
@@ -49,7 +55,10 @@ export function listingAddress(listing) {
   // A description can mention a university, shop, or contact address. Only use explicit property fields or an address title.
   const body = String(listing.body || '').slice(0,4000);
   const labels = [...body.matchAll(/^\s*(?:property address|adres|address|postcode|postal code)\s*:\s*([^\n]+)$/gim)];
-  const streetTitle = listing.source==='kamernet' && /, Delft$/i.test(listing.title || '') ? listing.title.slice(0,-7) : null;
+  // Kamernet titles are "Street, City": the part before the city is a usable street.
+  const suffix = listing.city ? ', ' + listing.city : null;
+  const streetTitle = listing.source==='kamernet' && suffix && String(listing.title || '').toLowerCase().endsWith(suffix.toLowerCase())
+    ? listing.title.slice(0,-suffix.length) : null;
   const address = listing.address || streetTitle;
   const postcode = listing.postcode || listing.location?.postcode;
   const candidates = [postcode && address && !POSTCODE.test(address) ? addressInput(address + ', ' + postcode, listing.city) : null,
@@ -89,7 +98,7 @@ async function geocode(fetcher,input) {
   const type=input.house?'adres':input.code?'postcode':'weg';
   url.search = new URLSearchParams({
     q:input.query, fq:'type:'+type, rows:'12',
-    fl:'weergavenaam,straatnaam,huisnummer,huisletter,huisnummertoevoeging,postcode,woonplaatsnaam,centroide_ll',
+    fl:'weergavenaam,straatnaam,huisnummer,huisletter,huisnummertoevoeging,postcode,woonplaatsnaam,wijknaam,buurtnaam,centroide_ll',
   });
   if(input.code) url.searchParams.append('fq','postcode:'+input.code);
   const data = await getJson(fetcher,url);
@@ -104,7 +113,17 @@ async function geocode(fetcher,input) {
   if(!matches.length) return null;
   const {p,doc} = matches[0];
   if(matches.some(match=>metres(p,match.p)>30)) return null;
-  return {...p,label:doc.weergavenaam || input.query,precision:input.house?'address':input.code?'postcode':'street'};
+  return {...p,label:doc.weergavenaam || input.query,precision:input.house?'address':input.code?'postcode':'street',
+    ...(districtName(doc) ? {district:districtName(doc)} : {})};
+}
+
+/** A readable district for "Room in …": PDOK's wijk (e.g. "Wijk 21 Hof van Delft" → "Hof van Delft"), else buurt. */
+export function districtName(doc) {
+  for (const value of [doc?.wijknaam, doc?.buurtnaam]) {
+    const name = String(value ?? '').replace(/^wijk\s+\d+\s*/i,'').replace(/^buurt\s+\d+\s*/i,'').trim();
+    if (name && name.length <= 48 && !/^\d+$/.test(name)) return name;
+  }
+  return null;
 }
 
 function chainFor(tags,kind) {
@@ -130,7 +149,14 @@ function webLink(input) {
   } catch {}
 }
 
-async function loadPlaces(fetcher,localFile) {
+/** The student city whose amenity catalog covers this point, if any. */
+export function catalogCity(origin) {
+  const near = STUDENT_CITIES.map(city=>({city,d:metres(origin,{lat:city.lat,lon:city.lng})})).sort((a,b)=>a.d-b.d)[0];
+  return near && near.d<=CATALOG_REACH_M ? near.city : null;
+}
+export const catalogKey = city => 'travel.catalog.' + city.id;
+
+async function loadPlaces(fetcher,localFile,city) {
   if(localFile){
     try {
       const local=JSON.parse(await readFile(localFile,'utf8'));
@@ -139,7 +165,8 @@ async function loadPlaces(fetcher,localFile) {
       // If the local map data has not been installed yet, try the public source.
     }
   }
-  const {south,west,north,east} = ALLOWED_AREA;
+  const south=(city.lat-CATALOG_HALF.lat).toFixed(4), north=(city.lat+CATALOG_HALF.lat).toFixed(4);
+  const west=(city.lng-CATALOG_HALF.lon).toFixed(4), east=(city.lng+CATALOG_HALF.lon).toFixed(4);
   const bbox = [south,west,north,east].join(',');
   const query = `[out:json][timeout:25];(nwr["shop"="supermarket"](${bbox});nwr["leisure"="fitness_centre"](${bbox}););out center;`;
   // The main Overpass server is often slow (30 s+ measured); public mirrors carry the same OSM data.
@@ -327,14 +354,18 @@ export function travelDisplay(listing, record, {
 
 export function createTravelService(db,{
   fetcher=fetch,motis=process.env.HOUSEWATCH_MOTIS_URL,localPlaces=process.env.HOUSEWATCH_AMENITIES_FILE,now=Date.now,streetInterval=2000,
+  // PDOK Locatieserver is a government API built for this; a lighter pace than the volunteer OSRM.
+  geocodeInterval=Math.min(streetInterval,400),
+  osrmDaily=OSRM_DAILY,
 }={}) {
   const active = new Map();
-  let placesPending, streetQueue=Promise.resolve(), nextStreetRequest=0;
+  const placesPending = new Map();
+  let streetQueue=Promise.resolve(), nextStreetRequest=0;
   let geocodeQueue=Promise.resolve(), nextGeocode=0;
   function lookup(input) {
     const work=geocodeQueue.then(async()=>{
       if(nextGeocode>now()) await wait(nextGeocode-now());
-      nextGeocode=now()+streetInterval;
+      nextGeocode=now()+geocodeInterval;
       return geocode(fetcher,input);
     });
     geocodeQueue=work.catch(()=>{});
@@ -354,27 +385,29 @@ export function createTravelService(db,{
       .map(([mode,route])=>[mode,route.seconds]));
     return {status:travel.status, approximate:['postcode','street'].includes(travel.origin?.precision), campus};
   }
-  async function catalog() {
-    const key=localPlaces?'travel.catalog.local':'travel.catalog.v1';
+  async function catalog(origin) {
+    const city=localPlaces ? null : catalogCity(origin);
+    if(!localPlaces && !city) return [];
+    const key=localPlaces?'travel.catalog.local':catalogKey(city);
     const cached=await db.getConfig(key);
     if(cached?.places && cached.expires>now() && cached.mapVersion===AMENITIES_VERSION) return cached.places;
     if(cached?.retryAfter>now()) return cached.places || [];
-    if(!placesPending) placesPending=loadPlaces(fetcher,localPlaces).then(async places=>{
-      await db.setConfig(key,{places,expires:now()+7*DAY,mapVersion:AMENITIES_VERSION});
+    if(!placesPending.has(key)) placesPending.set(key,loadPlaces(fetcher,localPlaces,city).then(async places=>{
+      await db.setConfig(key,{places,city:city?.id,expires:now()+7*DAY,mapVersion:AMENITIES_VERSION});
       return places;
     }, async ()=>{
       const places=cached?.expires>now()-30*DAY ? cached.places : [];
-      await db.setConfig(key,{places,expires:cached?.expires,mapVersion:cached?.mapVersion,retryAfter:now()+30*MINUTE});
+      await db.setConfig(key,{places,city:city?.id,expires:cached?.expires,mapVersion:cached?.mapVersion,retryAfter:now()+30*MINUTE});
       return places;
-    }).finally(()=>{placesPending=null;});
-    return placesPending;
+    }).finally(()=>{placesPending.delete(key);}));
+    return placesPending.get(key);
   }
   function queueStreet(plan,mode) {
     const work=streetQueue.then(async()=>{
       const budget=await db.getConfig('travel.streetBudget',{});
       const today=new Date(now()).toISOString().slice(0,10);
       const count=budget.day===today ? budget.count : 0;
-      if(count>=120 || budget.resumeAt>now()) return {status:'unavailable'};
+      if(count>=osrmDaily || budget.resumeAt>now()) return {status:'unavailable'};
       if(nextStreetRequest>now()) await wait(nextStreetRequest-now());
       nextStreetRequest=now()+streetInterval;
       await db.setConfig('travel.streetBudget',{day:today,count:count+1});
@@ -411,7 +444,7 @@ export function createTravelService(db,{
     const storage='travel.listing.'+listing.id;
     const saved=await db.getConfig(storage);
     const manual=body.location===null ? null : body.location===undefined ? saved?.manual :
-      addressInput(body.location,listing.city || 'Delft');
+      addressInput(body.location,listing.city || '');
     if(body.location!=null && !manual) throw error(400,'Enter a street and house number or a full Dutch postcode.');
     const {input,key,origin}=options(listing,{manual});
     if(!input&&!origin) {
@@ -434,14 +467,16 @@ export function createTravelService(db,{
     }
     catch { throw error(503,'The address lookup is temporarily unavailable. Try the map links or check again later.'); }
     if(!origin) throw error(422,'No matching address. Check the house number and city or enter the full postcode.');
-    const nearDelft=metres(DEFAULT_CAMPUS,origin)<=10_000;
-    const places=nearDelft ? await catalog() : [];
-    const destinations=[...CAMPUSES,nearest(places,origin,'gym'),nearest(places,origin,'supermarket')].filter(Boolean);
-    const plan=streetTablePlan([origin],destinations,!motisBase);
+    const places=await catalog(origin);
+    // Route only to campuses a student could commute to; the UI estimates the rest from distance.
+    const campuses=nearbyCampuses(origin);
+    const destinations=[...campuses,nearest(places,origin,'gym'),nearest(places,origin,'supermarket')].filter(Boolean);
+    const plan=streetTablePlan([origin],destinations,!motisBase && nearDelftRail(origin));
     const tableKey=createHash('sha256').update(JSON.stringify(plan)).digest('hex');
     const reuse=saved?.key===key && saved.streetExpires>now() && saved.streetTables?.key===tableKey;
     const departure=sampleDeparture(now());
-    const cachedOrQueue=mode=>reuse && saved.streetTables[mode]?.status==='ok' ? saved.streetTables[mode] : queueStreet(plan,mode);
+    const cachedOrQueue=mode=>!destinations.length ? {status:'no_route'} :
+      reuse && saved.streetTables[mode]?.status==='ok' ? saved.streetTables[mode] : queueStreet(plan,mode);
     const [walk,bike,transit]=await Promise.all([
       cachedOrQueue('walk'),
       cachedOrQueue('bike'),
@@ -458,7 +493,8 @@ export function createTravelService(db,{
     if(!latest || latest.listing_kind==='general_lead' || options(latest,{manual}).key!==key) throw error(409,'The listing location changed. Open its details again.');
     const limited=rows.some(row=>Object.values(row.routes).some(route=>route.status==='unavailable'));
     const at=now();
-    const cacheDuration=limited || (rows.length<CAMPUSES.length+2 && nearDelft) ? 10*MINUTE :
+    const amenitiesMissing=!!catalogCity(origin) && rows.length<campuses.length+2;
+    const cacheDuration=limited || amenitiesMissing ? 10*MINUTE :
       motisBase ? DAY : 7*DAY;
     const expires=Math.min(at+cacheDuration,motisBase?departure:Infinity);
     const streetExpires=reuse ? saved.streetExpires : at+7*DAY;

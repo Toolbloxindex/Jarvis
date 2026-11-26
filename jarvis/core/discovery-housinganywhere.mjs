@@ -20,15 +20,20 @@ const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
 const cents = value => Number.isSafeInteger(value) && value >= 0 && value < 100_000_000 ? value : null;
 const tidy = value => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 
+const citySlug = value => tidy(value).toLowerCase().replace(/[\s-]+/g, '-');
+
+/** The entity is the published Dutch property the candidate link points to (same id and city). */
 export function matchesHousingAnywhereEntity(entity, candidate) {
-  if (!entity || !positiveInteger(entity.id) || entity.currency !== 'EUR' ||
-      entity.city !== 'Delft' || entity.isDeleted === true || entity.isHidden === true ||
+  if (!entity || !positiveInteger(entity.id) || entity.currency !== 'EUR' || !tidy(entity.city) ||
+      (candidate.city && citySlug(entity.city) !== citySlug(candidate.city)) ||
+      entity.isDeleted === true || entity.isHidden === true ||
       (entity.stateLabel && entity.stateLabel !== 'published')) return false;
   try {
     const url = new URL(candidate.url);
-    const id = url.pathname.match(/^\/room\/ut(\d+)\/nl\/Delft(?:\/|$)/i)?.[1];
-    return url.origin === 'https://housinganywhere.com' && !url.username &&
-      !url.password && Number(id) === entity.id;
+    // The URL's city segment can be a local spelling; the entity id and city check above decide.
+    const match = url.pathname.match(/^\/room\/ut(\d+)\/nl\/[^/]+(?:\/|$)/i);
+    return url.origin === 'https://housinganywhere.com' && !url.username && !url.password &&
+      Number(match?.[1]) === entity.id;
   } catch {
     return false;
   }
@@ -40,7 +45,7 @@ export function housingAnywhereTitle(entity) {
     type === 'apartment' ? 'Apartment' : type === 'studio' ? 'Studio' :
     type === 'shared room' ? 'Shared room' : type === 'house' ? 'House' : 'Rental';
   const street = tidy(entity.street);
-  return (kind + ' in ' + (street ? street + ', ' : '') + 'Delft').slice(0, 160);
+  return (kind + ' in ' + (street ? street + ', ' : '') + (tidy(entity.city) || 'the Netherlands')).slice(0, 160);
 }
 
 function datePart(value) {
@@ -132,14 +137,14 @@ function normalizePrice(entity, result, put, warn) {
 
 export function normalizeHousingAnywhere(entity, candidate, listing) {
   if (!matchesHousingAnywhereEntity(entity,candidate)) {
-    throw new Error('Original HousingAnywhere details do not match the advertised Delft property.');
+    throw new Error('Original HousingAnywhere details do not match the advertised property.');
   }
   const result = {
     ...listing,
     evidence:{...listing.evidence},
     extraction_warnings:[...(listing.extraction_warnings || [])],
     title:housingAnywhereTitle(entity),
-    city:'Delft',
+    city:tidy(entity.city),
     // Street is public; hidden house numbers in the source state are not copied.
     address:tidy(entity.street).slice(0, 100) || null,
   };

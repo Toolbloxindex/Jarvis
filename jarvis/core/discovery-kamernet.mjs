@@ -42,8 +42,8 @@ export function normalizeKamernetIndex(row){
   if(furnished)evidence.furnished=sourceLabel('furnishing',furnished);
   const postcode=text(row.postalCode).toUpperCase().replace(/^(\d{4})\s*([A-Z]{2})$/,'$1 $2');
   const lat=row.postalCodeLat,lng=row.postalCodeLong;
-  const location=Number.isFinite(lat)&&Math.abs(lat)<=90&&Number.isFinite(lng)&&Math.abs(lng)<=180&&
-    Math.abs(lat-52)<0.2&&Math.abs(lng-4.36)<0.3
+  // Mainland Netherlands (see NL_BOUNDS in lib/universities.ts).
+  const location=Number.isFinite(lat)&&Number.isFinite(lng)&&lat>=50.7&&lat<=53.6&&lng>=3.3&&lng<=7.25
     ? {lat,lng,precision:'postcode',street:text(row.computedStreetName??row.street),postcode:/^[1-9]\d{3} [A-Z]{2}$/.test(postcode)?postcode:''}
     : null;
   return {

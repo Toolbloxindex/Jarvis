@@ -15,7 +15,7 @@ type Destination = {
 
 export interface TravelDisplay {
   status: string;
-  origin?: { lat?: number; lon?: number; precision: string } | null;
+  origin?: { lat?: number; lon?: number; precision: string; district?: string | null } | null;
   manual?: boolean;
   destinations?: Destination[];
   travelTimes?: Listing["travelTimes"];

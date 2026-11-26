@@ -81,11 +81,13 @@ test('Verra keeps structured postcode, alphanumeric address, rent and service co
   assert.equal(ad.photos.length, 1);
 });
 
-test('Huizenbalie stays Delft-scoped, including suffixed listing URLs', () => {
+test('Huizenbalie reads every Dutch city from the property URL, including suffixed listing URLs', () => {
   const s = source('huizenbalie');
   const index = parseIndex(s, fixture('huizenbalie/index.html'), s.origin + s.indexes[0]);
-  assert.equal(index.candidates.length, 1);
-  const ad = parseDetail(s, fixture('huizenbalie/detail.html'), index.candidates[0]);
+  assert.deepEqual(index.candidates.map((c) => c.city), ['Leerdam', 'Middendelft', 'Delft']);
+  const delft = index.candidates.find((c) => c.city === 'Delft');
+  assert.match(delft.url, /voorbeeldlaan-2-2611ab-delft-2\/$/);
+  const ad = parseDetail(s, fixture('huizenbalie/detail.html'), delft);
   assert.equal(ad.rent_base, 1035);
   assert.equal(ad.registration, false);
   assert.equal(ad.photos.length, 1);

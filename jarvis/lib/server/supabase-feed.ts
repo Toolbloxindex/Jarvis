@@ -22,15 +22,30 @@ export function publicTravelDisplay(row: PublicRow) {
   return travelDisplay(row.data, row.travel, { transitEnabled: !!row.travel?.result?.transitEnabled });
 }
 
-export async function readSupabaseListings() {
+/** A latitude/longitude box (degrees). */
+export interface Bounds {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}
+
+/**
+ * Public listings, optionally only those whose coordinates fall inside `bounds` (a region read:
+ * the database filters, so only that region's rows travel to the server).
+ */
+export async function readSupabaseListings(bounds?: Bounds) {
   const client = anonClient();
   const status = await client.from("public_feed_status").select("finished_at").single();
   if (status.error) throw new Error("Could not read public collector freshness.");
   const batchSize = 200;
   const rows: PublicRow[] = [];
   for (let offset = 0; ; offset += batchSize) {
-    const result = await client.from("public_listings").select("id,data,travel,history")
-      .order("id").range(offset, offset + batchSize - 1).returns<PublicRow[]>();
+    let query = client.from("public_listings").select("id,data,travel,history");
+    if (bounds) {
+      query = query.gte("lat", bounds.south).lte("lat", bounds.north).gte("lng", bounds.west).lte("lng", bounds.east);
+    }
+    const result = await query.order("id").range(offset, offset + batchSize - 1).returns<PublicRow[]>();
     if (result.error) throw new Error("Could not read public listings from Supabase.");
     rows.push(...result.data);
     if (result.data.length < batchSize) break;
@@ -41,7 +56,7 @@ export async function readSupabaseListings() {
   return mapStoredListings(listings, rows.flatMap((row) => row.history), (listing) => {
     const row = byId.get(listing.id)!;
     return publicTravelDisplay({ ...row, data: listing });
-  }, updatedAt);
+  }, updatedAt, { emptyIsLive: !!bounds });
 }
 
 export async function readSupabaseListingTravel(id: string) {
@@ -57,11 +72,14 @@ export async function hasSupabaseListings() {
   return result.data.length > 0;
 }
 
-export async function readSupabaseAmenities() {
-  const result = await anonClient().from("public_amenities").select("catalog,name,kind,lat,lon");
+/** Supermarkets and gyms (all city catalogs, or only those inside `bounds`). */
+export async function readSupabaseAmenities(bounds?: Bounds) {
+  let query = anonClient().from("public_amenities").select("catalog,name,kind,lat,lon");
+  if (bounds) query = query.gte("lat", bounds.south).lte("lat", bounds.north).gte("lon", bounds.west).lte("lon", bounds.east);
+  const result = await query;
   if (result.error) throw new Error("Could not read public amenities from Supabase.");
   const local = catalogRows(result.data.filter((row) => row.catalog === "travel.catalog.local"));
   const localKinds = new Set(local.map((place) => place.kind));
-  const shared = catalogRows(result.data.filter((row) => row.catalog === "travel.catalog.v1"));
+  const shared = catalogRows(result.data.filter((row) => row.catalog !== "travel.catalog.local"));
   return [...local, ...shared.filter((place) => !localKinds.has(place.kind))];
 }

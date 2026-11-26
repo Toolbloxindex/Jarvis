@@ -1,14 +1,25 @@
 import {normalizeFacebookTerms} from './facebook-terms.mjs';
+import {STUDENT_CITIES} from '../lib/universities.ts';
 
 /** Conservative, evidence-based housing rules. Missing terms never become facts. */
 export const DEFAULT_PROFILE = Object.freeze({
   name: 'Housing applicant', university: 'your university', programme: 'degree programme', student: true,
   age_at_move_in: null, languages: null,
   max_rent_total: Infinity, start_min: '2000-01-01', start_max: '2099-12-31',
-  min_stay_months: 1, preferred_end: '2099-12-31', city: 'Delft',
+  // null = any Dutch city (the collector is national; people filter by university in the UI).
+  min_stay_months: 1, preferred_end: '2099-12-31', city: null,
   parents_pay: false, guarantor_confirmed: false, registration_required: null,
 });
 export const EXTRACTION_EVIDENCE_VERSION = 1;
+// City names recognised in ad text: every student city (names and source spellings) plus the
+// Delft-area suburbs the parser has always known. Longest first so "Den Haag" beats "Haag".
+const escapeRe = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const titleCase = value => value.replace(/(^|[\s-])(\p{L})/gu, (_, sep, c) => sep + c.toUpperCase());
+const CITY_NAMES = [...new Set([
+  ...STUDENT_CITIES.flatMap(city => [city.name, ...city.aliases.map(titleCase)]),
+  'Rijswijk', 'Schiedam', 'Voorburg', 'Delfgauw', 'Pijnacker', 'Nootdorp',
+])].filter(name => !/^'?s-/.test(name) || name === "'s-Hertogenbosch").sort((a, b) => b.length - a.length);
+const CITY_PATTERN = CITY_NAMES.map(escapeRe).join('|');
 
 const MONTHS = {january:1,januari:1,jan:1,february:2,februari:2,feb:2,march:3,maart:3,mar:3,april:4,apr:4,may:5,mei:5,june:6,juni:6,jun:6,july:7,juli:7,jul:7,august:8,augustus:8,aug:8,september:9,sep:9,sept:9,october:10,oktober:10,oct:10,okt:10,november:11,nov:11,december:12,dec:12};
 const MONTH_RE = Object.keys(MONTHS).sort((a,b)=>b.length-a.length).join('|');
@@ -84,7 +95,7 @@ export function parseListingText(text,source='manual',url=null) {
     if(amounts.some(a=>m.index<a.index+a.length&&m.index+m[0].length>a.index))continue;
     const value=money(m[1]);if(value!==null)amounts.push({value,index:m.index,length:m[0].length});
   }
-  const cities='Delft|Rotterdam|Den Haag|The Hague|Leiden|Rijswijk|Schiedam|Voorburg|Delfgauw|Pijnacker|Nootdorp';
+  const cities=CITY_PATTERN;
   const modifiers='is|a|an|nice|cozy|cosy|spacious|modern|furnished|unfurnished|fully|newly|renovated|available|for|rent|te|huur|beschikbaar|gestoffeerde|gemeubileerde|gestoffeerd|gemeubileerd|large|small|single|double|student|offered|located|situated|gelegen';
   const propertyLocation=body.slice(0,1600).match(new RegExp(`\\b(?:room|studio|apartment|flat|house|property|sublet|kamer|woning|appartement)\\b(?:\\s+(?:${modifiers})){0,10}\\s+(?:in|te)\\s+(?:(?:north|south|east|west|central|noord|zuid|oost|centrum)[ -]+)?(${cities})\\b`,'i'));
   const labelledLocation=body.slice(0,1600).match(new RegExp(`\\b(?:city|plaats|location|locatie)\\s*:\\s*(${cities})\\b`,'i'));
@@ -242,8 +253,8 @@ export function evaluateListing(listing,profile=DEFAULT_PROFILE) {
   if(l.source_detail_pending===true)review('The listing index changed. A fresh check of the full advertisement is pending.');
   if(l.wanted_ad) reject('This post is seeking housing.');
   if(l.sale_ad) reject('The property is advertised for sale.');
-  if(l.city && l.city.toLowerCase()!==p.city.toLowerCase()) reject(`The listing is outside ${p.city}.`);
-  else if(!l.city) review('Confirm that the property is in Delft.');
+  if(p.city && l.city && l.city.toLowerCase()!==p.city.toLowerCase()) reject(`The listing is outside ${p.city}.`);
+  else if(!l.city) review(p.city ? `Confirm that the property is in ${p.city}.` : 'Confirm which city the property is in.');
   if(number(l.rent_total)) {
     if(l.rent_total>p.max_rent_total) reject(`All-in rent exceeds €${p.max_rent_total}/month.`);
     if(l.rent_excludes_bills===true) review('The stated total conflicts with excluded bills; confirm the all-in rent.');

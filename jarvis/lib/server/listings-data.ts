@@ -11,6 +11,7 @@ import type {
 } from "../listings/types";
 import { applicantRestrictions, listingEligibility, type ApplicantFacts } from "./listing-eligibility.ts";
 import { travelDetail, type TravelDisplay } from "./listing-travel.ts";
+import { studentCityForName } from "../universities.ts";
 
 type Nullable<T, K extends keyof T> = Omit<T, K> & { [P in K]: T[P] | null };
 
@@ -102,9 +103,12 @@ const quote = (row: Snapshot) => amount(row.rent_advertised_total) ?? amount(row
 const latest = (timestamps: (string | null | undefined)[]) => timestamps.reduce<string | null>((previous, value) =>
   value && Number.isFinite(Date.parse(value)) && (!previous || Date.parse(value) > Date.parse(previous)) ? value : previous, null);
 
-export function isDelftListing(row: StoredListing | null): row is StoredListing {
-  return !!row && trim(row.city).toLowerCase() === "delft" && row.listing_kind !== "general_lead" && !row.wanted_ad && !row.sale_ad;
+/** A rental offer anywhere in the Netherlands (not a wanted ad, sale or general lead). */
+export function isPublicListing(row: StoredListing | null): row is StoredListing {
+  return !!row && !!trim(row.city) && row.listing_kind !== "general_lead" && !row.wanted_ad && !row.sale_ad;
 }
+/** @deprecated The collector is national now; kept for older imports. */
+export const isDelftListing = isPublicListing;
 
 function rentParts(row: StoredListing): LiveListing["costs"] {
   const charges = new Map<string, number>();
@@ -179,8 +183,28 @@ function listingLocation(row: StoredListing, display: TravelDisplay): LiveListin
     street: trim(source?.street || input?.street),
     ...(houseNumber ? { houseNumber } : {}),
     postcode,
-    neighbourhood: trim(source?.neighbourhood ?? row.neighbourhood),
+    neighbourhood: areaName(row, origin, trim(source?.street || input?.street)),
   };
+}
+
+/**
+ * The place name shown as "Room in …". Never empty: the source's neighbourhood, else the district
+ * the geocoder found (PDOK wijk/buurt), else the street, else the city.
+ */
+export function areaName(
+  row: Pick<StoredListing, "neighbourhood" | "location" | "city">,
+  origin: { district?: string | null } | null | undefined,
+  street: string,
+) {
+  return trim(row.location?.neighbourhood ?? row.neighbourhood) || trim(origin?.district) || street ||
+    displayCity(row.city) || "the Netherlands";
+}
+
+/** A source's spelling of a municipality → the name shown (English for The Hague). */
+export function displayCity(city: string | null | undefined) {
+  const name = trim(city);
+  if (!name) return "";
+  return studentCityForName(name)?.name ?? name.replace(/(^|[\s-])(\p{L})/gu, (_, sep: string, c: string) => sep + c.toUpperCase());
 }
 
 function listingKind(row: StoredListing): ListingKind | null {
@@ -366,16 +390,20 @@ function groupListings(rows: StoredListing[]) {
   return [...groups.values()];
 }
 
-export function hasDelftListings(rows: unknown[]) {
-  return (rows as StoredListing[]).some(isDelftListing);
+export function hasPublicListings(rows: unknown[]) {
+  return (rows as StoredListing[]).some(isPublicListing);
 }
+/** @deprecated see hasPublicListings */
+export const hasDelftListings = hasPublicListings;
 
 export function mapStoredListings(
   stored: StoredListing[], changes: Change[], readTravel: (row: StoredListing) => TravelDisplay,
   updatedAt: string | null,
+  /** A region query may legitimately be empty while the database is not: report it as live. */
+  { emptyIsLive = false }: { emptyIsLive?: boolean } = {},
 ): ListingsResult {
-  const rows = stored.filter(isDelftListing);
-  if (!rows.length) return { listings: mockListings, source: "mock", updatedAt };
+  const rows = stored.filter(isPublicListing);
+  if (!rows.length) return emptyIsLive ? { listings: [], source: "live", updatedAt } : { listings: mockListings, source: "mock", updatedAt };
   const changesById = new Map<string, Change[]>();
   for (const change of changes) {
     const changes = changesById.get(change.listingId) ?? [];
@@ -405,7 +433,7 @@ export function mapStoredListings(
     return {
       id: row.id,
       kind,
-      title: location.street || trim(row.title) || "Delft rental",
+      title: location.street || trim(row.title) || `${displayCity(row.city) || "Dutch"} rental`,
       description: trim(row.body),
       location,
       sizeM2: amount(row.area_m2),
@@ -438,7 +466,7 @@ export function readListings(path: string): ListingsResult {
   if (!store) return { listings: mockListings, source: "mock", updatedAt: null };
   try {
     store.db.exec("BEGIN");
-    const rows = (store.getListings() as StoredListing[]).filter(isDelftListing);
+    const rows = (store.getListings() as StoredListing[]).filter(isPublicListing);
     const updatedAt = store.latestCollectorRun() ?? latest(rows.flatMap((row) => [row.last_seen_at, row.updated_at]));
     return mapStoredListings(rows, store.getListingHistory() as Change[],
       (row) => travelDisplay(row, store.getConfig('travel.listing.' + row.id)), updatedAt);

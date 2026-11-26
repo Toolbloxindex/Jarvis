@@ -4,7 +4,9 @@ import { runAiPass } from './ai-collect.mjs';
 
 const queueKey = 'collector.travel.pending';
 
-export function travelBudget(value = process.env.HOUSEWATCH_TRAVEL_BUDGET ?? '10') {
+// Homes located and routed per run. Geocoding (PDOK) is quick; OSRM is paced at 2 s and capped
+// daily (HOUSEWATCH_OSRM_DAILY), so 40 keeps a run well under its time limit.
+export function travelBudget(value = process.env.HOUSEWATCH_TRAVEL_BUDGET ?? '40') {
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
     throw new Error('HOUSEWATCH_TRAVEL_BUDGET must be a nonnegative integer.');
   }
@@ -55,7 +57,7 @@ export async function runCollector(store, {
         continue;
       }
       const listing = await store.getListing(listingId);
-      if (!listing || listing.city?.toLowerCase() !== 'delft' || listing.availability === 'unavailable' ||
+      if (!listing || !listing.city?.trim() || listing.availability === 'unavailable' ||
           listing.listing_kind === 'general_lead' || !listingTravelKey(listing)) continue;
       const before = await travel.display(listing);
       travelChecked++;
