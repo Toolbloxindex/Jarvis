@@ -261,7 +261,7 @@ function summary(source,c){
   evidence:{...parsed.evidence,...c.evidence},photos:source.kind==='room'?extractPropertyPhotos(source,'',c):normalizePhotos(source.id,c.photos),
   photo_version:source.kind==='room'||c.photos?.length?1:0,property_details_checked:false,source_evidence_ambiguous:true};
 }
-export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date.now(),sources=SOURCES,fetchSource,force=false,detailLimit=6}={}){
+export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date.now(),sources=SOURCES,fetchSource,force=false,detailLimit=6,stopAt=Infinity}={}){
  const changedListing=(before,after,{isNew=false,isChanged=false}={})=>{
   const origin=listingTravelKey(after);
   const moved=origin!==listingTravelKey(before);
@@ -272,7 +272,10 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
     !isDeepStrictEqual(before?.photos??[],after.photos??[])) result.changed++;
  };
  const result={enabled:await store.getConfig('discovery.enabled',true),checked:0,added:0,changed:0,sources:[],travelIds:[],aiIds:[]};if(!result.enabled)return result;
- for(const source of sources){const key='discovery.health.'+source.id;const previous=await store.getConfig(key,{});
+ for(const source of sources){
+  // Run time budget: past it, start no new source (it resumes next run, like the page budget).
+  if(Date.now()>stopAt){result.sources.push({id:source.id,status:'deferred'});continue;}
+  const key='discovery.health.'+source.id;const previous=await store.getConfig(key,{});
   if(!(await store.getConfig('discovery.enabled.'+source.id,true))){result.sources.push({id:source.id,status:'disabled'});continue;}
   if(source.kind==='account'){const health=await store.getConfig(key,{status:'not_checked',accountRequired:true,message:'Read-only Facebook group collection has not yet been tested. An account session alone does not establish coverage.'});result.sources.push({id:source.id,...health});continue;}
   if(previous.nextCheckAt&&Date.parse(previous.nextCheckAt)>now&&(!force||['blocked','policy_blocked'].includes(previous.status))){result.sources.push({id:source.id,...previous,skipped:true});continue;}
@@ -290,7 +293,7 @@ export async function runPublicDiscovery(store,{profile=DEFAULT_PROFILE,now=Date
     const startedAt=resume&&Number.isFinite(state.startedAt)?state.startedAt:now;
     const queue=resume?state.next.filter(ownOrigin):scope.indexes.map(p=>new URL(p,source.origin).href);const seen=new Set(resume?state.seen??[]:[]);
     try{
-     while(queue.length&&pages<budget){const url=queue.shift();if(seen.has(url))continue;seen.add(url);const parsed=parseIndex(source,await get(url),url,scope);pages++;for(const c of parsed.candidates)found.set(c.url,c);queue.push(...parsed.next.filter(u=>!seen.has(u)));}
+     while(queue.length&&pages<budget&&Date.now()<stopAt){const url=queue.shift();if(seen.has(url))continue;seen.add(url);const parsed=parseIndex(source,await get(url),url,scope);pages++;for(const c of parsed.candidates)found.set(c.url,c);queue.push(...parsed.next.filter(u=>!seen.has(u)));}
     }catch(e){
      // One city's search failing (a renamed slug, a format change) must not stop the other cities.
      if(['blocked','policy_blocked'].includes(e.status)||e?.name==='PostgresError'||!source.scopes)throw e;
