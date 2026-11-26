@@ -10,6 +10,8 @@ const figtree = Figtree({
 export const metadata: Metadata = {
   title: "Housewatch",
   description: "Every rental in Delft in one place, checked against your search.",
+  // Opened from the home screen, it runs as an app (and can receive web push on iOS 16.4+).
+  appleWebApp: { capable: true, title: "Housewatch", statusBarStyle: "default" },
 };
 
 export const viewport: Viewport = {
