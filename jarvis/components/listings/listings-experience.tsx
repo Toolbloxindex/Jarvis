@@ -507,7 +507,7 @@ export function ListingsExperience({
                 ) : (
                   <>
                     <NumberFlow value={main.length} className="tabular" /> {main.length === 1 ? "home" : "homes"}
-                    <span className="hidden sm:inline"> in Delft</span>
+                    <span className="hidden sm:inline"> near {university.city}</span>
                   </>
                 )}
               </h1>

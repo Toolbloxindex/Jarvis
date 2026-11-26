@@ -48,8 +48,11 @@ export function RegionFeed({
 
   // Until a newly chosen region arrives, keep showing the previous one (the map is already flying).
   const page = pages[region] ?? pages[initial.region];
+  // A new region is a new result set: remount rather than swap every home (and map pin) in place.
+  // Personal state (saved, passed, search, filters) is persisted, so nothing is lost.
   return (
     <ListingsExperience
+      key={page.region}
       listings={page.listings}
       now={page.now}
       updatedAt={page.updatedAt}
