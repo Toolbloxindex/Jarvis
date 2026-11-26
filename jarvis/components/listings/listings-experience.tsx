@@ -320,7 +320,7 @@ export function ListingsExperience({
           },
         },
       );
-    }, 170);
+    }, 90);
   }, [setSaved]);
 
   const passedStack = useRef<string[]>([]);
@@ -432,7 +432,7 @@ export function ListingsExperience({
         <div ref={sentinelRef} aria-hidden="true" className="absolute top-0 h-px w-px" />
 
         {/* ---------- Header + toolbar ---------- */}
-        <div className="hw-header sticky top-0 z-40 bg-white">
+        <div data-sticky-top className="hw-header sticky top-0 z-40 bg-white">
           <header className="relative z-20 flex h-[var(--header-h)] items-center gap-3 px-5 sm:px-6 xl:px-10">
             <Link href="/listings" aria-label="Housewatch, all homes" className="shrink-0 xl:min-w-[220px]">
               <Logo />
