@@ -23,6 +23,7 @@ import { viewListing, type ListingView } from "@/lib/listings/match";
 import { EMPTY_FILTERS, countActiveFilters, passesFilters, sortViews, type Filters, type SortKey } from "@/lib/listings/query";
 import { median } from "@/lib/listings/scores";
 import type { Listing, SearchCriteria } from "@/lib/listings/types";
+import { ensureDeviceId, usePersisted, usePersistedSet } from "@/lib/persist";
 import { universityById } from "@/lib/universities";
 import { dropStyle, flyIntoStyle } from "@/lib/card-motion";
 import { decodeWithin, runTransition } from "@/lib/view-transition";
@@ -34,6 +35,8 @@ import { TriageHint, useTriage } from "./triage";
 import { FiltersTab, MapSwitch, SortMenu } from "./toolbar";
 
 const APP_ROOT_ID = "listings-app";
+const EMPTY_RECORD: Record<string, string> = {};
+const EMPTY_CHECKS: Record<string, string[]> = {};
 const FILTERS_ID = "listing-filters";
 
 const ListingMap = dynamic(() => import("./listing-map"), {
@@ -73,11 +76,14 @@ export function ListingsExperience({
   updatedAt = null,
   collecting = false,
 }: ListingsExperienceProps) {
-  const [criteria, setCriteria] = useState(initialSearch);
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [sort, setSort] = useState<SortKey>("best");
-  const [saved, setSaved] = useState<ReadonlySet<string>>(() => new Set());
-  const [passed, setPassed] = useState<ReadonlySet<string>>(() => new Set());
+  // Personal state is local-first: it survives reloads and new tabs (lib/persist.ts).
+  const [criteria, setCriteria] = usePersisted<SearchCriteria>("search", initialSearch);
+  const [filters, setFilters] = usePersisted<Filters>("filters", EMPTY_FILTERS);
+  const [sort, setSort] = usePersisted<SortKey>("sort", "best");
+  const [savedList, setSaved] = usePersistedSet("saved");
+  const [passedList, setPassed] = usePersistedSet("passed");
+  const saved = useMemo<ReadonlySet<string>>(() => new Set(savedList), [savedList]);
+  const passed = useMemo<ReadonlySet<string>>(() => new Set(passedList), [passedList]);
   /** all = the feed; saved / passed = those lists. Saved and passed homes leave the feed. */
   const [view, setView] = useState<"all" | "saved" | "passed">("all");
   /** Just-saved homes stay in the feed for a beat, so the heart can pop before they fly off. */
@@ -87,10 +93,15 @@ export function ListingsExperience({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [photoIndex, setPhotoIndex] = useState<Record<string, number>>({});
-  const [notes, setNotes] = useState<Record<string, string>>({});
-  const [checked, setChecked] = useState<Record<string, string[]>>({});
-  const [mapOn, setMapOn] = useState(true);
-  const [filtersDocked, setFiltersDocked] = useState(true);
+  const [notes, setNotes] = usePersisted<Record<string, string>>("notes", EMPTY_RECORD);
+  const [checked, setChecked] = usePersisted<Record<string, string[]>>("checked", EMPTY_CHECKS);
+  const [mapOn, setMapOn] = usePersisted("mapOn", true);
+  const [filtersDocked, setFiltersDocked] = usePersisted("filtersDocked", true);
+
+  // Anonymous device id (cookie), the anchor for account-free sync.
+  useEffect(() => {
+    ensureDeviceId();
+  }, []);
   const [filtersSheet, setFiltersSheet] = useState(false);
   const [mobileMap, setMobileMap] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -166,9 +177,9 @@ export function ListingsExperience({
   /* ---------------- animated state changes ---------------- */
 
   const animate = useCallback((update: () => void) => runTransition("results", update), []);
-  const changeFilters = useCallback((f: Filters) => animate(() => setFilters(f)), [animate]);
-  const changeCriteria = useCallback((c: SearchCriteria) => animate(() => setCriteria(c)), [animate]);
-  const changeCriteriaLive = useCallback((c: SearchCriteria) => setCriteria(c), []);
+  const changeFilters = useCallback((f: Filters) => animate(() => setFilters(f)), [animate, setFilters]);
+  const changeCriteria = useCallback((c: SearchCriteria) => animate(() => setCriteria(c)), [animate, setCriteria]);
+  const changeCriteriaLive = useCallback((c: SearchCriteria) => setCriteria(c), [setCriteria]);
 
   /* ---------------- detail + URL ---------------- */
 
@@ -309,7 +320,7 @@ export function ListingsExperience({
         },
       );
     }, 170);
-  }, []);
+  }, [setSaved]);
 
   const passedStack = useRef<string[]>([]);
   const unpass = useCallback((id: string) => {
@@ -325,7 +336,7 @@ export function ListingsExperience({
         }),
       { before: () => style && document.head.append(style), done: () => style?.remove() },
     );
-  }, []);
+  }, [setPassed]);
 
   const pass = useCallback(
     (id: string) => {
@@ -363,7 +374,7 @@ export function ListingsExperience({
         action: { label: "Undo", onClick: () => unpass(id) },
       });
     },
-    [listingById, leaveHomeUrl, unpass],
+    [listingById, leaveHomeUrl, unpass, setPassed, setSaved],
   );
 
   const undoLastPass = useCallback(() => {
